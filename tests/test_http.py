@@ -148,7 +148,7 @@ def oauth_login(base: str) -> dict[str, Any]:
     assert status == 200 and "Claude" in page and "claude.ai" in page
 
     status, _, page = http("POST", base + "/login", form={"txn": txn, "password": "wrong"})
-    assert status == 401 and "incorrect" in page
+    assert status == 401 and "Incorrect password" in page
 
     status, headers, _ = http("POST", base + "/login", form={"txn": txn, "password": PASSWORD})
     assert status == 302
