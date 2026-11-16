@@ -142,16 +142,6 @@ def vault_root() -> Path:
     return root
 
 
-def attachments_dir() -> Path:
-    rel = os.environ.get("OBSIDIAN_ATTACHMENTS_DIR", "attachments")
-    return (vault_root() / rel).resolve()
-
-
-def graphs_dir() -> Path:
-    rel = os.environ.get("OBSIDIAN_GRAPHS_DIR", "attachments/graphs")
-    return (vault_root() / rel).resolve()
-
-
 def resolve_inside_vault(relative: str) -> Path:
     """Resolve a vault-relative path and refuse anything that escapes the vault."""
     if not relative or relative.strip() == "":

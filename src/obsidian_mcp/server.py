@@ -12,15 +12,13 @@ from collections.abc import Callable
 from dataclasses import asdict
 from typing import Any
 
-from mcp.server.apps import Apps
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, status, sync, x_post, x_search, youtube, youtube_search
+from . import links, notes, pdf, sync
 from .config import ConfigError, Settings, load_settings
-from .notes import embed_attachment
 from .vault import Vault, VaultError, configured_vaults, use_vault
 
 INSTRUCTIONS = """\
@@ -339,224 +337,19 @@ def read_pdf(
     return _read(run, vault)
 
 
-def generate_graph(
-    code: str,
-    filename: str | None = None,
-    dpi: int = 150,
-    timeout: float | None = None,
-    embed_in_note: str | None = None,
-    alt_text: str | None = None,
-    vault: str | None = None,
-) -> dict[str, Any]:
-    """Run Python (matplotlib) code and save the resulting figure inside the vault.
-
-    The user code has `plt` (matplotlib.pyplot) pre-imported and can optionally assign a
-    `fig` variable. If `embed_in_note` is provided, an Obsidian-style image link is
-    appended to that note.
-    """
-
-    def run() -> tuple[str, dict[str, Any]]:
-        result = graphs.generate_graph(code, filename=filename, dpi=dpi, timeout=timeout)
-        payload: dict[str, Any] = {"path": result.path}
-        if embed_in_note:
-            embed_attachment(embed_in_note, result.path, alt_text=alt_text)
-            payload["embedded_in"] = embed_in_note
-        return result.path, payload
-
-    return _write(vault, "graph", run)
-
-
-# -- web -----------------------------------------------------------------------------
-
-
-def youtube_transcript(
-    url: str,
-    languages: list[str] | None = None,
-    translate_to: str | None = None,
-    timestamps: bool = False,
-) -> dict[str, Any]:
-    """Get the subtitles of a YouTube video as text (manual or auto-generated).
-
-    `url` is a YouTube URL (watch, youtu.be, shorts, embed, live) or a video id.
-    `languages` is an ordered preference list of language codes (default ["fr", "en"]);
-    if none exists, any available track is used. `translate_to` (e.g. "fr") applies
-    YouTube's machine translation. `timestamps=true` returns one "[mm:ss] text" line per
-    subtitle instead of plain text. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **youtube.fetch(url, languages, translate_to, timestamps).as_dict()}
-    except youtube.YouTubeError as exc:
-        out = _err(exc)
-        if exc.blocked:  # listing the tracks would be blocked too (and cost proxy traffic)
-            return out
-        try:
-            out["available"] = youtube.available(url)
-        except youtube.YouTubeError:
-            pass
-        return out
-
-
-def youtube_search_videos(
-    query: str = "",
-    max_results: int = 8,
-    language: str | None = None,
-    order: str = "relevance",
-    published_after: str | None = None,
-    duration: str | None = None,
-    channel: str | None = None,
-) -> dict[str, Any]:
-    """Search YouTube videos (official YouTube Data API). Pair with youtube_transcript.
-
-    `query` is free text. `language` (e.g. "fr") favours results in that language.
-    `order`: relevance (default), date, viewCount or rating. `published_after` is a date
-    like "2025-01-31". `duration`: short (<4 min), medium (4-20 min) or long (>20 min).
-    `channel` is a handle ("@Computerphile") or channel id: with an empty query and
-    order="date" it lists the channel's latest videos. Returns title, channel, date,
-    duration, views, likes, whether manual captions exist, and the description.
-    About 100 searches a day fit in the free quota: search deliberately.
-    """
-    try:
-        results = youtube_search.search(
-            query, max_results, language, order, published_after, duration, channel
-        )
-        return {"ok": True, "count": len(results), "results": results}
-    except youtube_search.SearchError as exc:
-        return _err(exc)
-
-
-def read_x_post(url: str) -> dict[str, Any]:
-    """Read one public post on X (Twitter) from its link: full text, author, date, stats.
-
-    `url` is a post link (x.com, twitter.com, fxtwitter.com...; tracking parameters are
-    fine) or a bare post id. Uses FxTwitter, which returns long posts in full, plus the
-    quoted post, media links, poll and community note; falls back to X's oEmbed, which
-    only has the text and cuts long posts (`truncated: true`). No X account is used.
-    Protected and deleted posts cannot be read. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **x_post.fetch(url)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-
-def read_x_conversation(url: str, sort: str = "likes", cursor: str | None = None) -> dict[str, Any]:
-    """Read the replies to a public post on X, with the post itself and its stats.
-
-    Returns `post` (as read_x_post, plus quotes and bookmarks counts), `thread` (the
-    posts above it when it is itself a reply or part of a thread) and one page of
-    `replies` from other accounts, each with author, text, date, likes, reposts, replies,
-    views and `replying_to_status` (the post it answers, to rebuild the tree).
-    `sort`: "likes" (default) or "recency". Pass `next_cursor` back as `cursor` for the
-    next page of replies. Who liked a post is private on X and cannot be read.
-    Uses FxTwitter, no X account. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **x_post.conversation(url, sort, cursor)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict[str, Any]:
-    """Accounts that reposted a public post on X (name, handle, followers, bio).
-
-    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more. X sends its
-    own page size, so extra accounts are cut and counted in `not_shown`: they are not on
-    the next page, ask a bigger `count` to see them. Who liked a
-    post is private on X and cannot be read. Uses FxTwitter, no X account.
-    """
-    try:
-        return {"ok": True, **x_post.reposters(url, count, cursor)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-def read_x_inbox(
-    since: str | None = None,
-    count: int = 20,
-    cursor: str | None = None,
-    only_reposts: bool = False,
-    account: str | None = None,
-) -> dict[str, Any]:
-    """The user's X "inbox": latest posts of their dedicated X account, newest first.
-
-    The user reposts (or quotes, or posts links) on a second X account everything they
-    want analysed; this tool reads that account. `since` keeps only newer posts: a date
-    ("2026-11-02"), a date-time, or a duration ("24h", "7d"). `count` 1-100 (default 20);
-    follow `next_cursor` for older posts. Each post has `kind` (repost, quote, reply,
-    post), full text, author, date, stats, media and quoted post; for an article only the
-    title (call read_x_post on its url for the full text). `account` overrides the
-    configured account. No X login is used; the account must be public.
-    """
-    try:
-        return {"ok": True, **x_post.inbox(account, since, count, cursor, only_reposts)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-async def search_x(query: str, count: int = 20, sort: str = "latest") -> dict[str, Any]:
-    """Search posts on X by keywords, like the search box of x.com.
-
-    `query` accepts X's search operators: `from:user`, `to:user`, `"exact phrase"`,
-    `-word`, `lang:fr`, `since:2026-10-01`, `until:`, `min_faves:100`, `min_retweets:`,
-    `filter:links`, `-filter:replies`, `OR`. `sort`: "latest" (default, newest first)
-    or "top" (X's popular ranking). `count` 1-50 (default 20). Each post has url, kind
-    (post, reply, quote), date, author, full text, stats, links, media and quoted post.
-    Quota: X allows a fixed number of search requests per account every 15 minutes, and
-    one request returns at most 20 posts, so count <= 20 costs 1 request and count=50
-    costs 3. Prefer count <= 20 and precise queries. `quota` in the result gives X's
-    limit, the requests left (`remaining`, `searches_left` at this count) and when it
-    resets. Reading posts costs nothing: to dig into a post use read_x_post (full text,
-    articles), read_x_conversation (replies) or read_x_inbox, which go through
-    FxTwitter and never touch this quota or this account.
-    Uses a dedicated X account through twscrape (unofficial, against X's terms): search
-    deliberately, one query at a time (never in parallel: the account serves one search
-    at a time). If it reports a refused session or a rate limit, tell the user. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **await x_search.search(query, count, sort)}
-    except x_search.XSearchError as exc:
-        return _err(exc)
-
-
-# -- ecosystem -----------------------------------------------------------------------
-
-_registered: list[str] = []
-STATUS_APP_URI = "ui://obsidian-mcp/ecosystem-status.html"
-
-
-async def ecosystem_status(check: bool = True) -> dict[str, Any]:
-    """State of this MCP server and of everything its tools depend on, plus when each
-    tool was last used.
-
-    `checks` tests each building block with the cheapest request possible: the vault's
-    Git repository (reachable, unpushed commits), the YouTube proxy, the YouTube API key
-    (1 quota unit), FxTwitter, the X inbox account, and the X search account (its state
-    as last seen, without contacting X). Each has `state`: ok, warning, error or
-    not_configured, and a `detail`. `tools` gives, for each tool, its state (worst of
-    its dependencies), call count, errors and the date of the last call. Only the tool
-    name, time and success of each call are counted, never its content.
-    `check=false` skips the network tests and only returns usage.
-    The Revolut server is separate: call revolut_accounts for its state.
-    In Claude, the result also shows as an interactive card with a "Revérifier" button.
-    """
-    return {"ok": True, **await status.report(_registered, check)}
-
-
 # -- assembly --------------------------------------------------------------------------
 
 # Every tool working on a vault documents its `vault` parameter the same way.
 for _fn in (
     list_notes, read_note, write_note, append_note, insert_under_heading, search_notes,
     delete_note, vault_overview, list_tags, notes_with_tag, get_backlinks,
-    get_links, find_orphans, read_pdf, generate_graph,
+    get_links, find_orphans, read_pdf,
 ):
     _fn.__doc__ = (_fn.__doc__ or "").rstrip() + VAULT_DOC
 
 _READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
 _ADD = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
 _CHANGE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
-_WEB = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=True)
 
 _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (list_vaults, _READ),
@@ -570,19 +363,11 @@ _TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
     (get_links, _READ),
     (find_orphans, _READ),
     (read_pdf, _READ),
-    (youtube_transcript, _WEB),
-    (youtube_search_videos, _WEB),
-    (read_x_post, _WEB),
-    (read_x_conversation, _WEB),
-    (read_x_reposts, _WEB),
-    (read_x_inbox, _WEB),
-    (search_x, _WEB),
     (append_note, _ADD),
     (insert_under_heading, _ADD),
     (write_note, _CHANGE),
     (delete_note, _CHANGE),
     (sync_vault, _ADD),
-    (ecosystem_status, _WEB),
 ]
 
 
@@ -603,28 +388,9 @@ def build_server(settings: Settings) -> MCPServer:
             validate_token_resource=False,
         )
 
-    tools = list(_TOOLS)
-    if settings.enable_graphs:
-        tools.append((generate_graph, _ADD))
-    _registered[:] = [fn.__name__ for fn, _ in tools]
-
-    # ecosystem_status carries an MCP App: hosts that support it render the result
-    # as a card; the others get the same JSON as before.
-    apps = Apps()
-    apps.add_html_resource(
-        STATUS_APP_URI,
-        status.app_html(),
-        name="ecosystem-status",
-        title="État de l'écosystème",
-        prefers_border=True,
-    )
-    for fn, annotations in tools:
-        if fn is ecosystem_status:
-            apps.tool(resource_uri=STATUS_APP_URI, annotations=annotations)(status.tracked(fn))
-    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, extensions=[apps], **kwargs)
-    for fn, annotations in tools:
-        if fn is not ecosystem_status:
-            server.add_tool(status.tracked(fn), annotations=annotations)
+    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, **kwargs)
+    for fn, annotations in _TOOLS:
+        server.add_tool(fn, annotations=annotations)
 
     if provider is not None:
         from .auth import install_login_routes
@@ -654,8 +420,6 @@ def main() -> None:
         return
 
     _log(f"serving MCP on {settings.mcp_url} (listening on {settings.host}:{settings.port})")
-    if not settings.enable_graphs:
-        _log("generate_graph disabled (set OBSIDIAN_ENABLE_GRAPHS=true to enable)")
     server.run(
         "streamable-http",
         host=settings.host,

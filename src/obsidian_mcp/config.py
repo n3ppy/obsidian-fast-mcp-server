@@ -44,13 +44,6 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value if value else default
 
 
-def _env_bool(name: str, default: bool) -> bool:
-    value = _env(name)
-    if value is None:
-        return default
-    return value.lower() not in {"0", "false", "no", "off"}
-
-
 @dataclass(frozen=True)
 class Settings:
     transport: str = "stdio"
@@ -61,7 +54,6 @@ class Settings:
     static_token: str | None = None
     state_dir: Path = field(default_factory=lambda: Path("~/.local/state/obsidian-mcp").expanduser())
     allowed_redirects: tuple[str, ...] = DEFAULT_ALLOWED_REDIRECTS
-    enable_graphs: bool = True
     pull_interval: float = 30.0
 
     @property
@@ -105,9 +97,6 @@ def load_settings() -> Settings:
             _env("OBSIDIAN_MCP_STATE_DIR", "~/.local/state/obsidian-mcp") or ""
         ).expanduser(),
         allowed_redirects=allowed_redirects,
-        # Running arbitrary Python is acceptable on your own machine, much less on a
-        # server reachable from the Internet: off by default in HTTP mode.
-        enable_graphs=_env_bool("OBSIDIAN_ENABLE_GRAPHS", default=not is_http),
         pull_interval=float(_env("OBSIDIAN_PULL_INTERVAL", "30") or 30),
     )
 

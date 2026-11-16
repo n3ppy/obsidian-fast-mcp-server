@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_mcp import server, status, sync
+from obsidian_mcp import server, sync
 from obsidian_mcp.vault import VaultError, configured_vaults, get_vault, use_vault
 
 
@@ -127,12 +127,6 @@ def test_sync_all_vaults(two_vaults) -> None:
     assert out["ok"] and set(out["vaults"]) == {"principal", "cours"}
     out = server.sync_vault("pull", vault="cours")
     assert out["ok"] and "vaults" not in out
-
-
-def test_status_checks_every_vault(two_vaults) -> None:
-    out = status.check_vault_git()
-    assert out["state"] == "ok", out
-    assert set(out["vaults"]) == {"principal", "cours"}
 
 
 def test_single_vault_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
