@@ -8,7 +8,7 @@ from pathlib import Path
 
 import pytest
 
-from obsidian_mcp import server, sync
+from obsidian_mcp import server, sync, tools
 from obsidian_mcp.vault import VaultError, configured_vaults, get_vault, use_vault
 
 
@@ -73,7 +73,7 @@ def test_bad_configuration(value: str, monkeypatch: pytest.MonkeyPatch, tmp_path
 
 
 def test_list_vaults(two_vaults) -> None:
-    out = server.list_vaults()
+    out = tools.list_vaults()
     assert out["ok"] and out["choice_needed"] and out["default"] == "principal"
     by_name = {v["name"]: v for v in out["vaults"]}
     assert by_name["principal"]["note_count"] == 1
@@ -82,29 +82,29 @@ def test_list_vaults(two_vaults) -> None:
 
 
 def test_reads_default_to_main_vault(two_vaults) -> None:
-    out = server.list_notes()
+    out = tools.list_notes()
     assert out["ok"] and out["vault"] == "principal" and out["notes"] == ["Accueil.md"]
-    out = server.read_note("Maths", vault="cours")
+    out = tools.read_note("Maths", vault="cours")
     assert out["ok"] and out["vault"] == "cours" and "Algèbre" in out["content"]
-    assert server.read_note("Maths")["ok"] is False  # not in the main vault
-    out = server.search_notes("Algèbre", vault="cours")
+    assert tools.read_note("Maths")["ok"] is False  # not in the main vault
+    out = tools.search_notes("Algèbre", vault="cours")
     assert out["count"] == 1
-    assert server.vault_overview(vault="cours")["ok"]
+    assert tools.vault_overview(vault="cours")["ok"]
 
 
 def test_unknown_vault(two_vaults) -> None:
-    out = server.list_notes(vault="perso")
+    out = tools.list_notes(vault="perso")
     assert out["ok"] is False and "available vaults: principal, cours" in out["error"]
 
 
 def test_changes_need_explicit_vault(two_vaults) -> None:
-    out = server.write_note("Nouvelle.md", "texte")
+    out = tools.write_note("Nouvelle.md", "texte")
     assert out["ok"] is False and "pass `vault` explicitly" in out["error"]
     assert not (two_vaults["tmp"] / "data" / "vault" / "Nouvelle.md").exists()
 
 
 def test_write_goes_to_chosen_vault_and_its_remote(two_vaults) -> None:
-    out = server.append_note("Maths.md", "Géométrie.", vault="cours")
+    out = tools.append_note("Maths.md", "Géométrie.", vault="cours")
     assert out["ok"], out
     assert out["sync"] == "pushed" and out["vault"] == "cours"
     tmp = two_vaults["tmp"]
@@ -117,15 +117,15 @@ def test_write_goes_to_chosen_vault_and_its_remote(two_vaults) -> None:
 
 
 def test_links_cache_is_per_vault(two_vaults) -> None:
-    assert server.get_links("Accueil")["ok"]
-    assert server.get_links("Accueil", vault="cours")["ok"] is False
-    assert server.list_notes()["notes"] == ["Accueil.md"]
+    assert tools.get_links("Accueil")["ok"]
+    assert tools.get_links("Accueil", vault="cours")["ok"] is False
+    assert tools.list_notes()["notes"] == ["Accueil.md"]
 
 
 def test_sync_all_vaults(two_vaults) -> None:
-    out = server.sync_vault("pull")
+    out = tools.sync_vault("pull")
     assert out["ok"] and set(out["vaults"]) == {"principal", "cours"}
-    out = server.sync_vault("pull", vault="cours")
+    out = tools.sync_vault("pull", vault="cours")
     assert out["ok"] and "vaults" not in out
 
 
@@ -133,9 +133,9 @@ def test_single_vault_unchanged(tmp_path: Path, monkeypatch: pytest.MonkeyPatch)
     monkeypatch.setenv("OBSIDIAN_VAULT", str(tmp_path))
     monkeypatch.delenv("OBSIDIAN_VAULT_REMOTE", raising=False)
     monkeypatch.delenv("OBSIDIAN_EXTRA_VAULTS", raising=False)
-    out = server.write_note("A.md", "x")
+    out = tools.write_note("A.md", "x")
     assert out["ok"] and "vault" not in out
-    assert server.list_vaults()["choice_needed"] is False
+    assert tools.list_vaults()["choice_needed"] is False
 
 
 def test_tools_expose_vault_parameter() -> None:
