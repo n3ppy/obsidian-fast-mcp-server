@@ -11,7 +11,3 @@
 		-Server
 	}
 }
-
-# Other services on this VPS (e.g. revolut-mcp) drop their own site block in
-# ./caddy-sites/ (mounted below): each runs in its own stack, only Caddy is shared.
-import /etc/caddy/sites/*.caddy
