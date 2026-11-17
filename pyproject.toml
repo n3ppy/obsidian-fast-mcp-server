@@ -4,8 +4,8 @@ build-backend = "hatchling.build"
 
 [project]
 name = "obsidian-mcp"
-version = "0.2.0"
-description = "MCP server connecting Claude (Code, web, mobile) to an Obsidian vault: notes, tags, backlinks, PDFs, graphs, YouTube subtitles."
+version = "1.0"
+description = "MCP server connecting Claude (Code, web, mobile) to a Git-synced Obsidian vault: notes, tags, backlinks, PDFs."
 readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
@@ -14,10 +14,6 @@ dependencies = [
     "mcp>=2.3,<3",
     "pyyaml>=6.0",
     "pypdf>=4.2.0",
-    "matplotlib>=3.8.0",
-    "youtube-transcript-api>=1.2,<2",
-    "requests>=2.31",
-    "twscrape>=0.20",
 ]
 
 [project.scripts]

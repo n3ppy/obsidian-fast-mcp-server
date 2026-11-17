@@ -1,8 +1,13 @@
-# obsidian-mcp
+# obsidian-fast-mcp-server
 
 An MCP (Model Context Protocol) server that turns an Obsidian vault into a "second brain"
 Claude can read and write — from Claude Code on your computer, and from claude.ai and
 the Claude iPhone/iPad/Android apps through a self-hosted server.
+
+> **Credit:** this is a fork of [Axel687/mcp_obsiCC_IOS](https://github.com/Axel687/mcp_obsiCC_IOS)
+> by axel687 (MIT). The design (Git-synced vault, OAuth for the Claude apps, conflict
+> handling, multi-vault support) and most of the code are his. This fork trims it down to
+> the vault itself; see [Changes from upstream](#changes-from-upstream).
 
 ## Features
 
@@ -13,38 +18,6 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
 - **Git sync** — the vault is a Git repo shared with Obsidian Git on your devices; the
   server pulls before working and commits + pushes after every write.
 - **PDFs** — extract text from any PDF inside the vault, with optional page ranges.
-- **YouTube subtitles** — `youtube_transcript` returns the subtitles of any YouTube video
-  as text (manual or auto-generated, optional translation and timestamps).
-- **YouTube search** — `youtube_search_videos` finds videos with the official YouTube
-  Data API (filters: language, date, duration, channel) and returns their details.
-- **X posts** — `read_x_post` reads one public post on X from its link (full text of
-  long posts and X articles, author, date, stats, quoted post, media links) via FxTwitter, with X's
-  oEmbed as a fallback. No X account or API key.
-- **X inbox** — `read_x_inbox` reads the latest posts of a dedicated public X account:
-  repost there what you want Claude to analyse (filters: since a date or `24h`, reposts only).
-- **X replies and reposts** — `read_x_conversation` returns a post, the thread above
-  it and its replies (sorted by likes or date, paginated, each with its stats);
-  `read_x_reposts` lists who reposted it (FxTwitter API v2). Who liked a post is
-  private on X and cannot be read. Posts quoting a post are not available: FxTwitter
-  finds them through X search, which fails on its side.
-- **X search (experimental)** — `search_x` searches posts by keywords with X's operators
-  (`from:`, `lang:`, `since:`, `min_faves:`…), newest or top first. It uses
-  [twscrape](https://github.com/vladkens/twscrape) with the cookies of a **dedicated**
-  X account: this is unofficial scraping, against X's terms, and X may lock or suspend
-  that account. Never use your main account.
-  To measure it for real (X's quota, posts per request, how far back pages go, and
-  how well each search operator is honoured), run the bench on the server, one search
-  at a time, stopping 10 requests before the quota runs out:
-  `docker compose exec obsidian-mcp python -m obsidian_mcp.x_search_bench`
-  (`--help` for options; the JSON report lands in the state directory).
-- **Ecosystem status** — `ecosystem_status` tests every building block the tools rely
-  on (vault Git repository, YouTube proxy, YouTube API key, FxTwitter, X inbox and
-  search accounts) and gives, for each tool, its state, call count and date of last
-  call. Only the tool name, time and success of each call are counted (in
-  `usage.json` in the state directory), never arguments or results; secrets are never
-  shown (a proxy appears as `host:port`).
-- **Graphs** — run matplotlib code and save the figure into the vault (local mode only by
-  default).
 
 Every path is resolved relative to the vault root and checked so it cannot escape it.
 
@@ -55,7 +28,6 @@ Every path is resolved relative to the vault root and checked so it cannot escap
 | Where it runs | Launched by Claude Code on your machine | On its own, e.g. Docker on a VPS |
 | Who can use it | Claude Code on that machine | claude.ai, desktop & **mobile apps**, Claude Code anywhere |
 | Authentication | None needed (nothing is exposed) | **Mandatory**: OAuth with a password page, plus an optional static token |
-| `generate_graph` | On | Off unless `OBSIDIAN_ENABLE_GRAPHS=true` |
 
 The mobile apps can only use remote servers, and connectors are added from claude.ai on
 the web — they then show up automatically in the apps.
@@ -72,7 +44,7 @@ the web — they then show up automatically in the apps.
 ## Remote deployment (VPS)
 
 Prerequisites: a VPS with Docker, a domain or subdomain whose DNS points at it, ports
-80 and 443 open.
+80 and 443 open (see [Network and firewall](#network-and-firewall)).
 
 1. **Vault repo.** Create a private GitHub repo for the vault and push your vault to it
    (see "Obsidian side" below).
@@ -80,9 +52,9 @@ Prerequisites: a VPS with Docker, a domain or subdomain whose DNS points at it, 
    *Contents: read and write*.
 3. **Configure.**
    ```bash
-   git clone https://github.com/axel687/mcp_obsiCC_IOS.git && cd mcp_obsiCC_IOS
+   git clone https://github.com/n3ppy/obsidian-fast-mcp-server.git && cd obsidian-fast-mcp-server
    cp .env.example .env
-   nano .env   # domain, password, vault repo URL, git token
+   nano .env   # domain, public IP, password, vault repo URL, git token
    ```
 4. **Start.**
    ```bash
@@ -102,6 +74,39 @@ Prerequisites: a VPS with Docker, a domain or subdomain whose DNS points at it, 
 Update later with `git pull && docker compose up -d --build`. OAuth tokens are kept in
 the `state` volume, so Claude doesn't need to reconnect after a redeploy.
 
+### Network and firewall
+
+The Claude apps reach a connector from Anthropic's servers, not from your phone, so the
+server needs a public HTTPS address. A VPN-only address (Tailscale, WireGuard) is not
+enough.
+
+1. **DNS.** Add an `A` record for a subdomain (e.g. `obsidian.example.com`) pointing at
+   the server's public IPv4 address. A TTL of 600 is fine. On Cloudflare, set the record
+   to "DNS only". Put the name in `MCP_DOMAIN`.
+2. **Bind address.** Put the same public IP in `MCP_BIND_IP`. Caddy then listens on that
+   address only, and the MCP container is not published on the host at all.
+3. **Firewall.** Use your provider's cloud firewall (Hetzner, DigitalOcean, AWS security
+   group) rather than `ufw`: ports published by Docker bypass `ufw`. Allow these inbound
+   rules from any IPv4 and IPv6 address and leave outbound open:
+
+   | Protocol | Port | Why |
+   | --- | --- | --- |
+   | TCP | 80 | Certificate issue and renewal, redirect to HTTPS |
+   | TCP | 443 | The MCP endpoint |
+   | TCP | 22 | SSH. Restrict it to your own IP, or leave it out if you reach the server over a VPN |
+   | UDP | 41641 | Only if the server runs Tailscale (direct connections) |
+
+   On Hetzner: Cloud Console → your project → *Firewalls* → *Create Firewall*, add the
+   rules, then select the server under *Apply to*.
+4. **Check.** After `docker compose up -d --build`:
+   ```bash
+   curl https://<domain>/healthz                           # ok
+   curl -o /dev/null -w '%{http_code}\n' -X POST https://<domain>/mcp   # 401: auth is required
+   nc -vz -w 5 <server-ip> 22                              # from outside: times out if SSH is closed
+   ```
+   If the certificate is not issued, `docker compose logs caddy` says why; the usual
+   causes are a DNS record that has not propagated or port 80 being closed.
+
 ### How authentication works
 
 - claude.ai discovers the server's OAuth endpoints, registers itself, and opens
@@ -111,11 +116,12 @@ the `state` volume, so Claude doesn't need to reconnect after a redeploy.
 - Only redirects to claude.ai/claude.com, to chatgpt.com (ChatGPT developer mode) and
   to loopback addresses (Claude Code) are accepted (`OBSIDIAN_MCP_ALLOWED_REDIRECTS` to change).
 - After 5 wrong passwords in 15 minutes, the login is locked for 15 minutes.
+- At most 50 clients stay registered. When the limit is reached, only clients without a
+  live refresh token are dropped, so a flood of registrations cannot log you out.
 - Tokens are stored hashed (SHA-256) in `/data/state/oauth.json`. Deleting that file
   logs every client out.
 - The Git token reaches git through a credential helper reading the environment: it is
-  never written into `.git/config` or the remote URL, and is not visible to
-  `generate_graph` code.
+  never written into `.git/config` or the remote URL.
 
 ## Obsidian side (iPhone, iPad, PC)
 
@@ -173,12 +179,6 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_MCP_HOST` / `OBSIDIAN_MCP_PORT` | `0.0.0.0` / `8000` | HTTP listen address |
 | `OBSIDIAN_MCP_STATE_DIR` | `~/.local/state/obsidian-mcp` | Where OAuth clients and tokens are stored |
 | `OBSIDIAN_MCP_ALLOWED_REDIRECTS` | claude.ai, claude.com, chatgpt.com, loopback | Comma-separated OAuth redirect allowlist |
-| `OBSIDIAN_ENABLE_GRAPHS` | on in stdio, off in http | Expose `generate_graph` |
-| `OBSIDIAN_YOUTUBE_PROXY` | *(unset)* | Proxy URL for `youtube_transcript` (YouTube often blocks cloud IPs) |
-| `OBSIDIAN_YOUTUBE_API_KEY` | *(unset)* | YouTube Data API v3 key for `youtube_search_videos` |
-| `OBSIDIAN_X_INBOX_ACCOUNT` | *(unset)* | Public X username (no @) read by `read_x_inbox` |
-| `OBSIDIAN_X_SEARCH_COOKIES` | *(unset)* | Browser cookies of the dedicated account for `search_x`: `auth_token=...; ct0=...` |
-| `OBSIDIAN_X_SEARCH_ACCOUNT` | `OBSIDIAN_X_INBOX_ACCOUNT` | Username (no @) of that account |
 | `OBSIDIAN_VAULT_REMOTE` | *(unset)* | Git URL of the vault repo — enables sync |
 | `OBSIDIAN_VAULT_NAME` | `principal` | Name of the main vault (used by `vault`, see below) |
 | `OBSIDIAN_EXTRA_VAULTS` | *(unset)* | More vaults: `name=repo;name2=repo2` (a local path instead of a URL means no sync) |
@@ -187,9 +187,6 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_PULL_INTERVAL` | `30` | Min seconds between automatic pulls; `0` = every call, negative = never |
 | `OBSIDIAN_AUTO_PUSH` | `true` | Commit + push after every write |
 | `OBSIDIAN_GIT_NAME` / `OBSIDIAN_GIT_EMAIL` | `Obsidian MCP` / `obsidian-mcp@local` | Commit identity |
-| `OBSIDIAN_ATTACHMENTS_DIR` | `attachments` | Vault-relative folder for attachments |
-| `OBSIDIAN_GRAPHS_DIR` | `attachments/graphs` | Where generated graphs are written |
-| `OBSIDIAN_GRAPH_TIMEOUT` | `30` | Seconds before graph subprocesses are killed |
 
 ## Several vaults
 
@@ -200,10 +197,9 @@ Git repo, clone and sync. Every vault tool then takes an optional `vault` argume
   `AGENTS.md` is present). The server instructions tell the AI to ask the user which
   vault to use at the start of a conversation and to pass it to every call.
 - Reads without `vault` use the main vault.
-- Changes (`write_note`, `append_note`, `insert_under_heading`, `delete_note`,
-  `generate_graph`) are refused without an explicit `vault` when there is more than one,
+- Changes (`write_note`, `append_note`, `insert_under_heading`, `delete_note`) are refused without an explicit `vault` when there is more than one,
   so nothing lands in a vault the user did not pick.
-- `sync_vault()` without `vault` syncs them all; `ecosystem_status` checks every repo.
+- `sync_vault()` without `vault` syncs them all.
 
 MCP has no session the server could remember the choice in (the protocol is stateless),
 so the choice lives in the conversation: the AI repeats `vault` on each call.
@@ -230,29 +226,10 @@ All vault tools below also accept `vault` (see above).
 | `delete_note(path)` | Delete a note (committed, so recoverable from Git history). |
 | `read_pdf(path, page_start?, page_end?, joined=true)` | Extract PDF text. |
 | `sync_vault(action="both")` | Manually pull/push/both (every vault unless `vault` is given). No-op if Git sync is off. |
-| `generate_graph(code, filename?, dpi=150, timeout?, embed_in_note?, alt_text?)` | Run matplotlib code and save a figure (see below). |
 
 Links follow Obsidian's rules: `[[Note]]`, `[[Note#Heading]]`, `[[Note|alias]]`, embeds
 `![[...]]` and markdown links to `.md` files; a bare name resolves to the note in the same
 folder first, then the shortest path. Tags and links inside code are ignored.
-
-### Graph generation contract
-
-The code passed to `generate_graph` runs in a fresh Python subprocess (isolated mode,
-timeout, no secrets in its environment) with `matplotlib.pyplot` imported as `plt`. The
-server saves whichever figure you leave open, or the variable `fig` if you assign one.
-
-```python
-import numpy as np
-x = np.linspace(0, 2 * np.pi, 200)
-plt.plot(x, np.sin(x), label="sin")
-plt.legend()
-```
-
-With `embed_in_note`, a `![alt](attachments/graphs/...)` line is appended to that note.
-
-This is still arbitrary code execution: only enable it on a server you're comfortable
-letting Claude run code on.
 
 ## Development
 
@@ -263,3 +240,38 @@ pytest
 
 `tests/test_http.py` starts a real server and walks through the OAuth flow claude.ai
 uses, against a local Git remote standing in for GitHub.
+
+## Layout
+
+```
+src/obsidian_mcp/
+  server.py      entrypoint: settings, OAuth wiring, transport
+  tools/         the MCP tools (notes, graph, attachments, vaults) and how they run
+  notes.py       note operations on disk
+  links.py       tags, wikilinks, backlinks, orphans
+  pdf.py         PDF text extraction
+  sync.py        Git clone / pull / commit / push, with conflict handling
+  vault.py       vault selection and path safety
+  auth.py        OAuth provider and the password page
+  config.py      environment settings
+```
+
+## Changes from upstream
+
+Forked from [Axel687/mcp_obsiCC_IOS](https://github.com/Axel687/mcp_obsiCC_IOS) at
+`fe0622c` (2026-11-09). Since then:
+
+- Removed the tools unrelated to the vault: X/Twitter (`read_x_*`, `search_x`),
+  YouTube (`youtube_transcript`, `youtube_search_videos`), `ecosystem_status` and
+  `generate_graph`, with their dependencies (twscrape, youtube-transcript-api,
+  requests, matplotlib).
+- Split `server.py` into a `tools/` package. The tools Claude sees are unchanged.
+- Translated the login page to English.
+- Replaced the VPS deploy workflow with a test-only CI on `main` and `dev`, and removed
+  the shared Caddy sites setup.
+- Client registration no longer evicts a client that is logged in.
+- Docker Compose publishes Caddy on one address (`MCP_BIND_IP`) and sets memory limits.
+
+## License
+
+MIT. See [LICENSE](LICENSE). Original work © axel687.

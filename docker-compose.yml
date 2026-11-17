@@ -13,23 +13,22 @@ services:
     # Not published on the host: only Caddy can reach it.
     expose:
       - "8000"
+    mem_limit: 384m
 
   caddy:
     image: caddy:2
     restart: unless-stopped
     depends_on:
       - obsidian-mcp
+    # Published on one address only (the server's public IP), never on every interface.
     ports:
-      - "80:80"
-      - "443:443"
+      - "${MCP_BIND_IP:?set MCP_BIND_IP in .env to the public IP of this server}:80:80"
+      - "${MCP_BIND_IP:?set MCP_BIND_IP in .env to the public IP of this server}:443:443"
+    mem_limit: 128m
     environment:
       MCP_DOMAIN: ${MCP_DOMAIN}
-    # "edge" is shared with services from other stacks (revolut-mcp), never with
-    # obsidian-mcp, so those services and this one cannot reach each other.
-    networks: [default, edge]
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
-      - ./caddy-sites:/etc/caddy/sites:ro
       - caddy_data:/data
       - caddy_config:/config
 
@@ -39,7 +38,3 @@ volumes:
   state:
   caddy_data:
   caddy_config:
-
-networks:
-  edge:
-    name: mcp_edge

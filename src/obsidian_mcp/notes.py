@@ -155,9 +155,3 @@ def delete_note(path: str) -> str:
     target.unlink()
     return rel
 
-
-def embed_attachment(note_path: str, attachment_rel: str, alt_text: str | None = None) -> str:
-    """Append an Obsidian-style embed link for an attachment to a note."""
-    alt = alt_text or Path(attachment_rel).stem
-    link = f"![{alt}]({attachment_rel.replace(' ', '%20')})"
-    return append_note(note_path, link)

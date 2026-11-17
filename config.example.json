@@ -4,10 +4,7 @@
       "command": "python",
       "args": ["-m", "obsidian_mcp"],
       "env": {
-        "OBSIDIAN_VAULT": "/absolute/path/to/your/Vault",
-        "OBSIDIAN_ATTACHMENTS_DIR": "attachments",
-        "OBSIDIAN_GRAPHS_DIR": "attachments/graphs",
-        "OBSIDIAN_GRAPH_TIMEOUT": "30"
+        "OBSIDIAN_VAULT": "/absolute/path/to/your/Vault"
       }
     }
   }

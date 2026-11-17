@@ -159,8 +159,16 @@ class VaultOAuthProvider:
                 "_registered_at": time.time(),
             }
             if len(clients) > MAX_CLIENTS:
-                oldest = sorted(clients, key=lambda k: clients[k].get("_registered_at", 0))
-                for key in oldest[: len(clients) - MAX_CLIENTS]:
+                # Registration is open to anyone, so a flood of registrations must not
+                # push out a client the owner has logged in with: only clients without
+                # a live refresh token are evicted, oldest first.
+                self.store.purge_expired()
+                in_use = {v["client_id"] for v in self.store.data["refresh"].values()}
+                idle = sorted(
+                    (k for k in clients if k not in in_use and k != client_info.client_id),
+                    key=lambda k: clients[k].get("_registered_at", 0),
+                )
+                for key in idle[: len(clients) - MAX_CLIENTS]:
                     del clients[key]
             self.store.save()
 
@@ -327,10 +335,10 @@ class VaultOAuthProvider:
 # -- login page ----------------------------------------------------------------------
 
 _PAGE = """<!doctype html>
-<html lang="fr"><head><meta charset="utf-8">
+<html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="referrer" content="no-referrer">
-<title>Obsidian MCP — connexion</title>
+<title>Obsidian MCP — sign in</title>
 <style>
 :root {{ color-scheme: light dark; --bg:#f6f5f2; --card:#fff; --fg:#1c1b19; --muted:#6b6862; --accent:#6f4fd8; --err:#b3261e; }}
 @media (prefers-color-scheme: dark) {{ :root {{ --bg:#141413; --card:#1f1e1c; --fg:#ecebe7; --muted:#a19e97; --accent:#a48cf0; --err:#f2b8b5; }} }}
@@ -348,7 +356,7 @@ button {{ width:100%; font:inherit; font-weight:600; padding:12px; border:0; bor
   background:var(--accent); color:#fff; }}
 .err {{ color:var(--err); font-size:14px; margin:0 0 14px; }}
 </style></head><body><main>
-<h1>Accès au vault Obsidian</h1>
+<h1>Access to your Obsidian vault</h1>
 {body}
 </main></body></html>"""
 
@@ -366,23 +374,23 @@ def _page(body: str, status: int = 200) -> HTMLResponse:
 
 
 def _form(txn: str, pending: _PendingLogin, error: str | None = None) -> HTMLResponse:
-    who = html.escape(pending.client_name or "Un client MCP")
+    who = html.escape(pending.client_name or "An MCP client")
     target = html.escape(urlparse(str(pending.params.redirect_uri)).netloc)
     err = f'<p class="err">{html.escape(error)}</p>' if error else ""
-    body = f"""<p><strong>{who}</strong> demande l'accès à ton vault.<br>Retour vers <code>{target}</code></p>
+    body = f"""<p><strong>{who}</strong> is asking for access to your vault.<br>Returns to <code>{target}</code></p>
 {err}<form method="post" action="login">
 <input type="hidden" name="txn" value="{html.escape(txn)}">
-<input type="password" name="password" placeholder="Mot de passe" autocomplete="current-password" autofocus required>
-<button type="submit">Autoriser</button></form>"""
+<input type="password" name="password" placeholder="Password" autocomplete="current-password" autofocus required>
+<button type="submit">Allow</button></form>"""
     return _page(body, status=401 if error else 200)
 
 
 def install_login_routes(server: Any, provider: VaultOAuthProvider) -> None:
     """Register ``GET/POST /login`` on the MCP server (routes added this way are public)."""
 
-    expired = _page("<p>Cette demande a expiré. Relance la connexion depuis Claude.</p>", status=400)
+    expired = _page("<p>This request has expired. Start the connection again from Claude.</p>", status=400)
     locked = _page(
-        "<p>Trop de tentatives. Réessaie dans un quart d'heure.</p>", status=429
+        "<p>Too many attempts. Try again in 15 minutes.</p>", status=429
     )
 
     @server.custom_route("/login", methods=["GET", "POST"])
@@ -407,7 +415,7 @@ def install_login_routes(server: Any, provider: VaultOAuthProvider) -> None:
         except KeyError:
             return expired
         if redirect is None:
-            return _form(txn, pending, error="Mot de passe incorrect.")
+            return _form(txn, pending, error="Incorrect password.")
         return RedirectResponse(redirect, status_code=302)
 
     @server.custom_route("/healthz", methods=["GET"])

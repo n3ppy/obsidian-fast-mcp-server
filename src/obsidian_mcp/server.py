@@ -1,27 +1,22 @@
 """MCP server entrypoint.
 
-Runs over stdio (Claude Code on the same machine) or Streamable HTTP (a VPS reachable
-by claude.ai, the mobile apps and Claude Code), depending on
-``OBSIDIAN_MCP_TRANSPORT``. See ``config.py`` for every setting.
+Runs over stdio (Claude Code on the same machine) or Streamable HTTP (a server reachable
+by claude.ai, the mobile apps and Claude Code), depending on ``OBSIDIAN_MCP_TRANSPORT``.
+See ``config.py`` for every setting and ``tools/`` for what the server can do.
 """
 
 from __future__ import annotations
 
 import sys
-from collections.abc import Callable
-from dataclasses import asdict
 from typing import Any
 
-from mcp.server.apps import Apps
 from mcp.server.auth.settings import AuthSettings, ClientRegistrationOptions, RevocationOptions
 from mcp.server.mcpserver import MCPServer
 from mcp.server.transport_security import TransportSecuritySettings
-from mcp.types import ToolAnnotations
 
-from . import graphs, links, notes, pdf, status, sync, x_post, x_search, youtube, youtube_search
+from . import sync
 from .config import ConfigError, Settings, load_settings
-from .notes import embed_attachment
-from .vault import Vault, VaultError, configured_vaults, use_vault
+from .tools import TOOLS
 
 INSTRUCTIONS = """\
 This server is the user's Obsidian vault, their "second brain". Paths are relative to
@@ -39,604 +34,43 @@ the vault root; the `.md` suffix is optional. Good habits:
   own rules file (CLAUDE.md / AGENTS.md at its root): read it before working there.
 """
 
-VAULT_DOC = (
-    "\n\n`vault`: name of the vault to use (see `list_vaults`). Optional for reading "
-    "(main vault by default); required for changes when several vaults are configured."
-)
-
 
 def _log(message: str) -> None:
     print(f"[obsidian-mcp] {message}", file=sys.stderr, flush=True)
 
 
-def _err(exc: Exception) -> dict[str, Any]:
-    return {"ok": False, "error": str(exc), "type": exc.__class__.__name__}
-
-
-def _refresh(payload: dict[str, Any]) -> None:
-    """Pull changes from other devices if the local copy may be stale.
-
-    A failed pull must not block reading: the tool still answers from the local copy
-    and reports the problem.
-    """
-    try:
-        sync.maybe_pull()
-    except VaultError as exc:
-        payload["sync_warning"] = f"could not pull latest changes, answering from local copy: {exc}"
-
-
-def _tag(vault: Vault) -> dict[str, Any]:
-    """Name the vault in the answer, but only when there is a choice of vaults."""
-    return {"vault": vault.name} if len(configured_vaults()) > 1 else {}
-
-
-def _read(fn: Callable[[], dict[str, Any]], vault: str | None = None) -> dict[str, Any]:
-    try:
-        with use_vault(vault) as v:
-            payload: dict[str, Any] = _tag(v)
-            _refresh(payload)
-            try:
-                result = fn()
-            except VaultError as exc:
-                return {**_err(exc), **payload}
-            return {"ok": True, **result, **payload}
-    except VaultError as exc:  # unknown vault, bad configuration
-        return _err(exc)
-
-
-def _write(
-    vault: str | None, action: str, fn: Callable[[], tuple[str, dict[str, Any]]]
-) -> dict[str, Any]:
-    """Run a change on one vault: pick the vault (explicitly when there are several),
-    then hold the git lock for pull → write → commit → push, so a background pull
-    can't rebase under a half-written file. `fn` returns (path, payload)."""
-    try:
-        with use_vault(vault, explicit=True) as v, sync.lock:
-            extra: dict[str, Any] = _tag(v)
-            _refresh(extra)
-            try:
-                path, payload = fn()
-            except VaultError as exc:
-                return {**_err(exc), **extra}
-            return _with_sync(action, path, {"ok": True, **payload, **extra})
-    except VaultError as exc:
-        return _err(exc)
-
-
-def _with_sync(action: str, path: str, payload: dict[str, Any]) -> dict[str, Any]:
-    try:
-        status = sync.auto_commit(action, path)
-    except VaultError as exc:
-        payload["sync_error"] = str(exc)
-    else:
-        if status not in ("auto-push off", "sync disabled", "nothing to commit"):
-            payload["sync"] = status
-    return payload
-
-
-# -- notes ---------------------------------------------------------------------------
-
-
-def list_notes(subdir: str | None = None, vault: str | None = None) -> dict[str, Any]:
-    """List all markdown notes in the vault (optionally scoped to a subdirectory)."""
-    return _read(lambda: {"notes": notes.list_notes(subdir)}, vault)
-
-
-def read_note(path: str, vault: str | None = None) -> dict[str, Any]:
-    """Read a note's full markdown content. `path` is vault-relative; the `.md` suffix is optional."""
-    return _read(lambda: {"path": path, "content": notes.read_note(path)}, vault)
-
-
-def write_note(
-    path: str, content: str, overwrite: bool = False, vault: str | None = None
-) -> dict[str, Any]:
-    """Create a note (or overwrite if `overwrite=true`). Creates parent directories as needed."""
-
-    def run() -> tuple[str, dict[str, Any]]:
-        written = notes.write_note(path, content, overwrite=overwrite)
-        return written, {"path": written}
-
-    return _write(vault, "write", run)
-
-
-def append_note(path: str, content: str, vault: str | None = None) -> dict[str, Any]:
-    """Append text to the end of a note (creates the note if it doesn't exist)."""
-
-    def run() -> tuple[str, dict[str, Any]]:
-        written = notes.append_note(path, content)
-        return written, {"path": written}
-
-    return _write(vault, "append", run)
-
-
-def insert_under_heading(
-    path: str,
-    heading: str,
-    content: str,
-    create_if_missing: bool = True,
-    vault: str | None = None,
-) -> dict[str, Any]:
-    """Insert text at the end of the section whose heading matches `heading` exactly.
-
-    If the heading isn't present and `create_if_missing` is true, a new `## heading`
-    section is appended with the content underneath.
-    """
-
-    def run() -> tuple[str, dict[str, Any]]:
-        written = notes.insert_under_heading(
-            path, heading, content, create_if_missing=create_if_missing
-        )
-        return written, {"path": written}
-
-    return _write(vault, "insert", run)
-
-
-def search_notes(
-    query: str, regex: bool = False, max_results: int = 200, vault: str | None = None
-) -> dict[str, Any]:
-    """Search note contents. Default is case-insensitive substring; pass `regex=true` for regex."""
-
-    def run() -> dict[str, Any]:
-        hits = notes.search_notes(query, regex=regex, max_results=max_results)
-        return {"count": len(hits), "hits": [asdict(h) for h in hits]}
-
-    return _read(run, vault)
-
-
-def delete_note(path: str, vault: str | None = None) -> dict[str, Any]:
-    """Delete a note from the vault. The deletion is committed, so it can be undone from Git history."""
-
-    def run() -> tuple[str, dict[str, Any]]:
-        deleted = notes.delete_note(path)
-        return deleted, {"deleted": deleted}
-
-    return _write(vault, "delete", run)
-
-
-def _sync_one(action: str) -> dict[str, Any]:
-    if not sync.is_enabled():
-        return {"ok": True, "enabled": False, "note": "no Git remote for this vault"}
-    result: dict[str, Any] = {"ok": True, "enabled": True}
-    try:
-        if action in {"pull", "both"}:
-            result["pull"] = sync.pull()
-        if action in {"push", "both"}:
-            result["push"] = sync.commit_and_push("obsidian-mcp: manual sync")
-    except VaultError as exc:
-        return _err(exc)
-    return result
-
-
-def sync_vault(action: str = "both", vault: str | None = None) -> dict[str, Any]:
-    """Manually sync the vault with its Git remote.
-
-    `action` can be "pull", "push", or "both" (default). No-op for a vault without a
-    Git remote. Reads already pull automatically every few seconds. Without `vault`,
-    every configured vault is synced.
-    """
-    action = action.lower()
-    if action not in {"pull", "push", "both"}:
-        return _err(VaultError(f"unknown action {action!r} (expected pull|push|both)"))
-    try:
-        names = [vault] if vault is not None else list(configured_vaults())
-        if len(names) <= 1:
-            with use_vault(vault):
-                return _sync_one(action)
-        results: dict[str, Any] = {}
-        for name in names:
-            with use_vault(name):
-                results[name] = _sync_one(action)
-    except VaultError as exc:
-        return _err(exc)
-    return {"ok": all(r.get("ok") for r in results.values()), "vaults": results}
-
-
-def list_vaults() -> dict[str, Any]:
-    """The vaults this server can use, main one first. When there are several and the
-    user has not said which one to use, ask them (once per conversation), then pass its
-    name as `vault` to the other tools."""
-    try:
-        vaults = configured_vaults()
-    except VaultError as exc:
-        return _err(exc)
-    out: list[dict[str, Any]] = []
-    for name, v in vaults.items():
-        entry: dict[str, Any] = {"name": name, "main": v.main, "git_sync": v.remote is not None}
-        if v.remote:
-            entry["repository"] = v.remote
-        try:
-            with use_vault(name):
-                entry["note_count"] = len(notes.list_notes(None))
-                entry["has_rules_file"] = any(
-                    (v.path / f).is_file() for f in ("CLAUDE.md", "AGENTS.md")
-                )
-        except VaultError as exc:
-            entry["error"] = str(exc)
-        out.append(entry)
-    return {
-        "ok": True,
-        "count": len(out),
-        "default": out[0]["name"] if out else None,
-        "choice_needed": len(out) > 1,
-        "vaults": out,
-    }
-
-
-# -- graph of the vault: tags, links ---------------------------------------------------
-
-
-def vault_overview(vault: str | None = None) -> dict[str, Any]:
-    """Map of the vault: note count, folders, most used tags, most linked notes, orphans
-    and unresolved links. A good first call to get oriented."""
-    return _read(links.overview, vault)
-
-
-def list_tags(prefix: str | None = None, vault: str | None = None) -> dict[str, Any]:
-    """List tags with how many notes use each (frontmatter and inline #tags).
-
-    With `prefix="philo"`, only `#philo` and nested tags like `#philo/nietzsche`.
-    """
-    return _read(lambda: {"tags": links.list_tags(prefix)}, vault)
-
-
-def notes_with_tag(tag: str, include_nested: bool = True, vault: str | None = None) -> dict[str, Any]:
-    """Notes carrying a tag. `#` is optional; nested tags (`tag/sub`) are included by default."""
-
-    def run() -> dict[str, Any]:
-        found = links.notes_with_tag(tag, include_nested=include_nested)
-        return {"tag": tag.lstrip("#"), "count": len(found), "notes": found}
-
-    return _read(run, vault)
-
-
-def get_backlinks(path: str, vault: str | None = None) -> dict[str, Any]:
-    """Notes that link to this one (wikilinks, embeds and markdown links), with the line
-    containing each link. Accepts a vault path or a bare note name."""
-    return _read(lambda: links.backlinks(path), vault)
-
-
-def get_links(path: str, vault: str | None = None) -> dict[str, Any]:
-    """Links going out of a note, each resolved to a vault path when the target exists;
-    `unresolved` lists links to notes that don't exist yet."""
-    return _read(lambda: links.outgoing_links(path), vault)
-
-
-def find_orphans(include_without_outgoing: bool = False, vault: str | None = None) -> dict[str, Any]:
-    """Notes no other note links to. With `include_without_outgoing=true`, only notes
-    that are completely isolated (no links in either direction)."""
-
-    def run() -> dict[str, Any]:
-        found = links.find_orphans(include_without_outgoing)
-        return {"count": len(found), "notes": found}
-
-    return _read(run, vault)
-
-
-# -- attachments -----------------------------------------------------------------------
-
-
-def read_pdf(
-    path: str,
-    page_start: int | None = None,
-    page_end: int | None = None,
-    joined: bool = True,
-    vault: str | None = None,
-) -> dict[str, Any]:
-    """Extract text from a PDF stored in the vault. Pages are 1-indexed, inclusive.
-
-    Set `joined=false` to receive per-page strings instead of a single concatenated text.
-    """
-
-    def run() -> dict[str, Any]:
-        extract = pdf.read_pdf(path, page_start=page_start, page_end=page_end)
-        out: dict[str, Any] = {"path": extract.path, "page_count": extract.page_count}
-        if joined:
-            out["text"] = extract.joined()
-        else:
-            out["pages"] = extract.pages
-        return out
-
-    return _read(run, vault)
-
-
-def generate_graph(
-    code: str,
-    filename: str | None = None,
-    dpi: int = 150,
-    timeout: float | None = None,
-    embed_in_note: str | None = None,
-    alt_text: str | None = None,
-    vault: str | None = None,
-) -> dict[str, Any]:
-    """Run Python (matplotlib) code and save the resulting figure inside the vault.
-
-    The user code has `plt` (matplotlib.pyplot) pre-imported and can optionally assign a
-    `fig` variable. If `embed_in_note` is provided, an Obsidian-style image link is
-    appended to that note.
-    """
-
-    def run() -> tuple[str, dict[str, Any]]:
-        result = graphs.generate_graph(code, filename=filename, dpi=dpi, timeout=timeout)
-        payload: dict[str, Any] = {"path": result.path}
-        if embed_in_note:
-            embed_attachment(embed_in_note, result.path, alt_text=alt_text)
-            payload["embedded_in"] = embed_in_note
-        return result.path, payload
-
-    return _write(vault, "graph", run)
-
-
-# -- web -----------------------------------------------------------------------------
-
-
-def youtube_transcript(
-    url: str,
-    languages: list[str] | None = None,
-    translate_to: str | None = None,
-    timestamps: bool = False,
-) -> dict[str, Any]:
-    """Get the subtitles of a YouTube video as text (manual or auto-generated).
-
-    `url` is a YouTube URL (watch, youtu.be, shorts, embed, live) or a video id.
-    `languages` is an ordered preference list of language codes (default ["fr", "en"]);
-    if none exists, any available track is used. `translate_to` (e.g. "fr") applies
-    YouTube's machine translation. `timestamps=true` returns one "[mm:ss] text" line per
-    subtitle instead of plain text. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **youtube.fetch(url, languages, translate_to, timestamps).as_dict()}
-    except youtube.YouTubeError as exc:
-        out = _err(exc)
-        if exc.blocked:  # listing the tracks would be blocked too (and cost proxy traffic)
-            return out
-        try:
-            out["available"] = youtube.available(url)
-        except youtube.YouTubeError:
-            pass
-        return out
-
-
-def youtube_search_videos(
-    query: str = "",
-    max_results: int = 8,
-    language: str | None = None,
-    order: str = "relevance",
-    published_after: str | None = None,
-    duration: str | None = None,
-    channel: str | None = None,
-) -> dict[str, Any]:
-    """Search YouTube videos (official YouTube Data API). Pair with youtube_transcript.
-
-    `query` is free text. `language` (e.g. "fr") favours results in that language.
-    `order`: relevance (default), date, viewCount or rating. `published_after` is a date
-    like "2025-01-31". `duration`: short (<4 min), medium (4-20 min) or long (>20 min).
-    `channel` is a handle ("@Computerphile") or channel id: with an empty query and
-    order="date" it lists the channel's latest videos. Returns title, channel, date,
-    duration, views, likes, whether manual captions exist, and the description.
-    About 100 searches a day fit in the free quota: search deliberately.
-    """
-    try:
-        results = youtube_search.search(
-            query, max_results, language, order, published_after, duration, channel
-        )
-        return {"ok": True, "count": len(results), "results": results}
-    except youtube_search.SearchError as exc:
-        return _err(exc)
-
-
-def read_x_post(url: str) -> dict[str, Any]:
-    """Read one public post on X (Twitter) from its link: full text, author, date, stats.
-
-    `url` is a post link (x.com, twitter.com, fxtwitter.com...; tracking parameters are
-    fine) or a bare post id. Uses FxTwitter, which returns long posts in full, plus the
-    quoted post, media links, poll and community note; falls back to X's oEmbed, which
-    only has the text and cuts long posts (`truncated: true`). No X account is used.
-    Protected and deleted posts cannot be read. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **x_post.fetch(url)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-
-def read_x_conversation(url: str, sort: str = "likes", cursor: str | None = None) -> dict[str, Any]:
-    """Read the replies to a public post on X, with the post itself and its stats.
-
-    Returns `post` (as read_x_post, plus quotes and bookmarks counts), `thread` (the
-    posts above it when it is itself a reply or part of a thread) and one page of
-    `replies` from other accounts, each with author, text, date, likes, reposts, replies,
-    views and `replying_to_status` (the post it answers, to rebuild the tree).
-    `sort`: "likes" (default) or "recency". Pass `next_cursor` back as `cursor` for the
-    next page of replies. Who liked a post is private on X and cannot be read.
-    Uses FxTwitter, no X account. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **x_post.conversation(url, sort, cursor)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-def read_x_reposts(url: str, count: int = 40, cursor: str | None = None) -> dict[str, Any]:
-    """Accounts that reposted a public post on X (name, handle, followers, bio).
-
-    `count` is 1-100 per page; pass `next_cursor` back as `cursor` for more. X sends its
-    own page size, so extra accounts are cut and counted in `not_shown`: they are not on
-    the next page, ask a bigger `count` to see them. Who liked a
-    post is private on X and cannot be read. Uses FxTwitter, no X account.
-    """
-    try:
-        return {"ok": True, **x_post.reposters(url, count, cursor)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-def read_x_inbox(
-    since: str | None = None,
-    count: int = 20,
-    cursor: str | None = None,
-    only_reposts: bool = False,
-    account: str | None = None,
-) -> dict[str, Any]:
-    """The user's X "inbox": latest posts of their dedicated X account, newest first.
-
-    The user reposts (or quotes, or posts links) on a second X account everything they
-    want analysed; this tool reads that account. `since` keeps only newer posts: a date
-    ("2026-11-02"), a date-time, or a duration ("24h", "7d"). `count` 1-100 (default 20);
-    follow `next_cursor` for older posts. Each post has `kind` (repost, quote, reply,
-    post), full text, author, date, stats, media and quoted post; for an article only the
-    title (call read_x_post on its url for the full text). `account` overrides the
-    configured account. No X login is used; the account must be public.
-    """
-    try:
-        return {"ok": True, **x_post.inbox(account, since, count, cursor, only_reposts)}
-    except x_post.XPostError as exc:
-        return _err(exc)
-
-
-async def search_x(query: str, count: int = 20, sort: str = "latest") -> dict[str, Any]:
-    """Search posts on X by keywords, like the search box of x.com.
-
-    `query` accepts X's search operators: `from:user`, `to:user`, `"exact phrase"`,
-    `-word`, `lang:fr`, `since:2026-10-01`, `until:`, `min_faves:100`, `min_retweets:`,
-    `filter:links`, `-filter:replies`, `OR`. `sort`: "latest" (default, newest first)
-    or "top" (X's popular ranking). `count` 1-50 (default 20). Each post has url, kind
-    (post, reply, quote), date, author, full text, stats, links, media and quoted post.
-    Quota: X allows a fixed number of search requests per account every 15 minutes, and
-    one request returns at most 20 posts, so count <= 20 costs 1 request and count=50
-    costs 3. Prefer count <= 20 and precise queries. `quota` in the result gives X's
-    limit, the requests left (`remaining`, `searches_left` at this count) and when it
-    resets. Reading posts costs nothing: to dig into a post use read_x_post (full text,
-    articles), read_x_conversation (replies) or read_x_inbox, which go through
-    FxTwitter and never touch this quota or this account.
-    Uses a dedicated X account through twscrape (unofficial, against X's terms): search
-    deliberately, one query at a time (never in parallel: the account serves one search
-    at a time). If it reports a refused session or a rate limit, tell the user. Nothing is written to the vault.
-    """
-    try:
-        return {"ok": True, **await x_search.search(query, count, sort)}
-    except x_search.XSearchError as exc:
-        return _err(exc)
-
-
-# -- ecosystem -----------------------------------------------------------------------
-
-_registered: list[str] = []
-STATUS_APP_URI = "ui://obsidian-mcp/ecosystem-status.html"
-
-
-async def ecosystem_status(check: bool = True) -> dict[str, Any]:
-    """State of this MCP server and of everything its tools depend on, plus when each
-    tool was last used.
-
-    `checks` tests each building block with the cheapest request possible: the vault's
-    Git repository (reachable, unpushed commits), the YouTube proxy, the YouTube API key
-    (1 quota unit), FxTwitter, the X inbox account, and the X search account (its state
-    as last seen, without contacting X). Each has `state`: ok, warning, error or
-    not_configured, and a `detail`. `tools` gives, for each tool, its state (worst of
-    its dependencies), call count, errors and the date of the last call. Only the tool
-    name, time and success of each call are counted, never its content.
-    `check=false` skips the network tests and only returns usage.
-    The Revolut server is separate: call revolut_accounts for its state.
-    In Claude, the result also shows as an interactive card with a "Revérifier" button.
-    """
-    return {"ok": True, **await status.report(_registered, check)}
-
-
-# -- assembly --------------------------------------------------------------------------
-
-# Every tool working on a vault documents its `vault` parameter the same way.
-for _fn in (
-    list_notes, read_note, write_note, append_note, insert_under_heading, search_notes,
-    delete_note, vault_overview, list_tags, notes_with_tag, get_backlinks,
-    get_links, find_orphans, read_pdf, generate_graph,
-):
-    _fn.__doc__ = (_fn.__doc__ or "").rstrip() + VAULT_DOC
-
-_READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
-_ADD = ToolAnnotations(read_only_hint=False, destructive_hint=False, open_world_hint=False)
-_CHANGE = ToolAnnotations(read_only_hint=False, destructive_hint=True, open_world_hint=False)
-_WEB = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=True)
-
-_TOOLS: list[tuple[Callable[..., Any], ToolAnnotations]] = [
-    (list_vaults, _READ),
-    (vault_overview, _READ),
-    (list_notes, _READ),
-    (read_note, _READ),
-    (search_notes, _READ),
-    (list_tags, _READ),
-    (notes_with_tag, _READ),
-    (get_backlinks, _READ),
-    (get_links, _READ),
-    (find_orphans, _READ),
-    (read_pdf, _READ),
-    (youtube_transcript, _WEB),
-    (youtube_search_videos, _WEB),
-    (read_x_post, _WEB),
-    (read_x_conversation, _WEB),
-    (read_x_reposts, _WEB),
-    (read_x_inbox, _WEB),
-    (search_x, _WEB),
-    (append_note, _ADD),
-    (insert_under_heading, _ADD),
-    (write_note, _CHANGE),
-    (delete_note, _CHANGE),
-    (sync_vault, _ADD),
-    (ecosystem_status, _WEB),
-]
-
-
-def build_server(settings: Settings) -> MCPServer:
-    kwargs: dict[str, Any] = {}
-    provider = None
-    if settings.is_http:
-        from .auth import VaultOAuthProvider
-
-        provider = VaultOAuthProvider(settings)
-        kwargs["auth_server_provider"] = provider
-        kwargs["auth"] = AuthSettings(
+def _auth_kwargs(settings: Settings) -> tuple[dict[str, Any], Any]:
+    """OAuth wiring for HTTP mode: (MCPServer kwargs, provider). Empty for stdio."""
+    if not settings.is_http:
+        return {}, None
+    from .auth import VaultOAuthProvider
+
+    provider = VaultOAuthProvider(settings)
+    kwargs = {
+        "auth_server_provider": provider,
+        "auth": AuthSettings(
             issuer_url=settings.public_url,
             resource_server_url=settings.mcp_url,
             client_registration_options=ClientRegistrationOptions(enabled=True),
             revocation_options=RevocationOptions(enabled=True),
             # Single-user server: every token we issue is for this server anyway.
             validate_token_resource=False,
-        )
+        ),
+    }
+    return kwargs, provider
 
-    tools = list(_TOOLS)
-    if settings.enable_graphs:
-        tools.append((generate_graph, _ADD))
-    _registered[:] = [fn.__name__ for fn, _ in tools]
 
-    # ecosystem_status carries an MCP App: hosts that support it render the result
-    # as a card; the others get the same JSON as before.
-    apps = Apps()
-    apps.add_html_resource(
-        STATUS_APP_URI,
-        status.app_html(),
-        name="ecosystem-status",
-        title="État de l'écosystème",
-        prefers_border=True,
-    )
-    for fn, annotations in tools:
-        if fn is ecosystem_status:
-            apps.tool(resource_uri=STATUS_APP_URI, annotations=annotations)(status.tracked(fn))
-    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, extensions=[apps], **kwargs)
-    for fn, annotations in tools:
-        if fn is not ecosystem_status:
-            server.add_tool(status.tracked(fn), annotations=annotations)
+def build_server(settings: Settings) -> MCPServer:
+    kwargs, provider = _auth_kwargs(settings)
+    server = MCPServer("obsidian-mcp", instructions=INSTRUCTIONS, **kwargs)
+    for fn, annotations in TOOLS:
+        server.add_tool(fn, annotations=annotations)
 
     if provider is not None:
         from .auth import install_login_routes
 
         install_login_routes(server, provider)
     return server
-
-
-def _bootstrap_sync() -> None:
-    """Clone (if needed) and pull before serving any requests."""
-    for line in sync.bootstrap_all():
-        _log(line)
 
 
 def main() -> None:
@@ -646,7 +80,9 @@ def main() -> None:
         _log(str(exc))
         sys.exit(2)
 
-    _bootstrap_sync()
+    # Clone (if needed) and pull before serving any requests.
+    for line in sync.bootstrap_all():
+        _log(line)
     server = build_server(settings)
 
     if not settings.is_http:
@@ -654,8 +90,6 @@ def main() -> None:
         return
 
     _log(f"serving MCP on {settings.mcp_url} (listening on {settings.host}:{settings.port})")
-    if not settings.enable_graphs:
-        _log("generate_graph disabled (set OBSIDIAN_ENABLE_GRAPHS=true to enable)")
     server.run(
         "streamable-http",
         host=settings.host,
