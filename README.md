@@ -54,7 +54,7 @@ Prerequisites: a VPS with Docker, a domain or subdomain whose DNS points at it, 
    ```bash
    git clone https://github.com/n3ppy/obsidian-fast-mcp-server.git && cd obsidian-fast-mcp-server
    cp .env.example .env
-   nano .env   # domain, password, vault repo URL, git token
+   nano .env   # domain, public IP, password, vault repo URL, git token
    ```
 4. **Start.**
    ```bash
@@ -83,6 +83,8 @@ the `state` volume, so Claude doesn't need to reconnect after a redeploy.
 - Only redirects to claude.ai/claude.com, to chatgpt.com (ChatGPT developer mode) and
   to loopback addresses (Claude Code) are accepted (`OBSIDIAN_MCP_ALLOWED_REDIRECTS` to change).
 - After 5 wrong passwords in 15 minutes, the login is locked for 15 minutes.
+- At most 50 clients stay registered. When the limit is reached, only clients without a
+  live refresh token are dropped, so a flood of registrations cannot log you out.
 - Tokens are stored hashed (SHA-256) in `/data/state/oauth.json`. Deleting that file
   logs every client out.
 - The Git token reaches git through a credential helper reading the environment: it is
@@ -234,6 +236,8 @@ Forked from [Axel687/mcp_obsiCC_IOS](https://github.com/Axel687/mcp_obsiCC_IOS) 
 - Translated the login page to English.
 - Replaced the VPS deploy workflow with a test-only CI on `main` and `dev`, and removed
   the shared Caddy sites setup.
+- Client registration no longer evicts a client that is logged in.
+- Docker Compose publishes Caddy on one address (`MCP_BIND_IP`) and sets memory limits.
 
 ## License
 
