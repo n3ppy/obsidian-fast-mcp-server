@@ -44,7 +44,7 @@ the web — they then show up automatically in the apps.
 ## Remote deployment (VPS)
 
 Prerequisites: a VPS with Docker, a domain or subdomain whose DNS points at it, ports
-80 and 443 open.
+80 and 443 open (see [Network and firewall](#network-and-firewall)).
 
 1. **Vault repo.** Create a private GitHub repo for the vault and push your vault to it
    (see "Obsidian side" below).
@@ -73,6 +73,39 @@ Prerequisites: a VPS with Docker, a domain or subdomain whose DNS points at it, 
 
 Update later with `git pull && docker compose up -d --build`. OAuth tokens are kept in
 the `state` volume, so Claude doesn't need to reconnect after a redeploy.
+
+### Network and firewall
+
+The Claude apps reach a connector from Anthropic's servers, not from your phone, so the
+server needs a public HTTPS address. A VPN-only address (Tailscale, WireGuard) is not
+enough.
+
+1. **DNS.** Add an `A` record for a subdomain (e.g. `obsidian.example.com`) pointing at
+   the server's public IPv4 address. A TTL of 600 is fine. On Cloudflare, set the record
+   to "DNS only". Put the name in `MCP_DOMAIN`.
+2. **Bind address.** Put the same public IP in `MCP_BIND_IP`. Caddy then listens on that
+   address only, and the MCP container is not published on the host at all.
+3. **Firewall.** Use your provider's cloud firewall (Hetzner, DigitalOcean, AWS security
+   group) rather than `ufw`: ports published by Docker bypass `ufw`. Allow these inbound
+   rules from any IPv4 and IPv6 address and leave outbound open:
+
+   | Protocol | Port | Why |
+   | --- | --- | --- |
+   | TCP | 80 | Certificate issue and renewal, redirect to HTTPS |
+   | TCP | 443 | The MCP endpoint |
+   | TCP | 22 | SSH. Restrict it to your own IP, or leave it out if you reach the server over a VPN |
+   | UDP | 41641 | Only if the server runs Tailscale (direct connections) |
+
+   On Hetzner: Cloud Console → your project → *Firewalls* → *Create Firewall*, add the
+   rules, then select the server under *Apply to*.
+4. **Check.** After `docker compose up -d --build`:
+   ```bash
+   curl https://<domain>/healthz                           # ok
+   curl -o /dev/null -w '%{http_code}\n' -X POST https://<domain>/mcp   # 401: auth is required
+   nc -vz -w 5 <server-ip> 22                              # from outside: times out if SSH is closed
+   ```
+   If the certificate is not issued, `docker compose logs caddy` says why; the usual
+   causes are a DNS record that has not propagated or port 80 being closed.
 
 ### How authentication works
 
