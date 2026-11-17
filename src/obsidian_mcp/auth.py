@@ -159,8 +159,16 @@ class VaultOAuthProvider:
                 "_registered_at": time.time(),
             }
             if len(clients) > MAX_CLIENTS:
-                oldest = sorted(clients, key=lambda k: clients[k].get("_registered_at", 0))
-                for key in oldest[: len(clients) - MAX_CLIENTS]:
+                # Registration is open to anyone, so a flood of registrations must not
+                # push out a client the owner has logged in with: only clients without
+                # a live refresh token are evicted, oldest first.
+                self.store.purge_expired()
+                in_use = {v["client_id"] for v in self.store.data["refresh"].values()}
+                idle = sorted(
+                    (k for k in clients if k not in in_use and k != client_info.client_id),
+                    key=lambda k: clients[k].get("_registered_at", 0),
+                )
+                for key in idle[: len(clients) - MAX_CLIENTS]:
                     del clients[key]
             self.store.save()
 
