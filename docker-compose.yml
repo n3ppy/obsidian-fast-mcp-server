@@ -29,6 +29,7 @@ services:
       MCP_DOMAIN: ${MCP_DOMAIN}
     volumes:
       - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./caddy.d:/etc/caddy/sites:ro  # optional extra routes (*.caddy), see the Caddyfile
       - caddy_data:/data
       - caddy_config:/config
 

@@ -35,3 +35,6 @@ settings.local.json
 *.log
 tmp/
 !.env.example
+
+# Server-specific Caddy routes (caddy.d/README.md explains)
+caddy.d/*.caddy

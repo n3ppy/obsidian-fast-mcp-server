@@ -2,9 +2,15 @@
 # The domain's DNS A/AAAA record must point at the VPS, with ports 80 and 443 open.
 {$MCP_DOMAIN} {
 	encode gzip
-	reverse_proxy obsidian-mcp:8000 {
-		# Streamable HTTP uses server-sent events: don't buffer them.
-		flush_interval -1
+	# Extra routes for this site, if any: every *.caddy file in caddy.d/ (next to this
+	# file) is read here, for example to send some paths to another app. Use `handle`
+	# blocks with a matcher; whatever they don't match reaches the MCP server below.
+	import /etc/caddy/sites/*.caddy
+	handle {
+		reverse_proxy obsidian-mcp:8000 {
+			# Streamable HTTP uses server-sent events: don't buffer them.
+			flush_interval -1
+		}
 	}
 	header {
 		Strict-Transport-Security "max-age=31536000"

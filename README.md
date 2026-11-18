@@ -76,6 +76,10 @@ Prerequisites: a VPS with Docker, a domain or subdomain whose DNS points at it, 
 Update later with `git pull && docker compose up -d --build`. OAuth tokens are kept in
 the `state` volume, so Claude doesn't need to reconnect after a redeploy.
 
+To put another app on the same domain (some paths go to it, the rest to the MCP
+server), drop a `*.caddy` file with `handle` blocks into `caddy.d/` and reload Caddy;
+`caddy.d/README.md` has an example.
+
 ### Network and firewall
 
 The Claude apps reach a connector from Anthropic's servers, not from your phone, so the
