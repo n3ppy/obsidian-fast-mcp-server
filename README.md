@@ -109,17 +109,55 @@ enough.
 
 ### How authentication works
 
+There are two login methods, chosen with `OBSIDIAN_MCP_AUTH`.
+
+**Password (default).** You set one password; nothing else to create.
+
 - claude.ai discovers the server's OAuth endpoints, registers itself, and opens
   `/authorize`. The server shows a password page; on success it hands Claude a one-time
   code exchanged for an access token (1 hour) and a refresh token (30 days, rotated on
   every use).
-- Only redirects to claude.ai/claude.com, to chatgpt.com (ChatGPT developer mode) and
-  to loopback addresses (Claude Code) are accepted (`OBSIDIAN_MCP_ALLOWED_REDIRECTS` to change).
 - After 5 wrong passwords in 15 minutes, the login is locked for 15 minutes.
 - At most 50 clients stay registered. When the limit is reached, only clients without a
   live refresh token are dropped, so a flood of registrations cannot log you out.
 - Tokens are stored hashed (SHA-256) in `/data/state/oauth.json`. Deleting that file
   logs every client out.
+
+**GitHub (`OBSIDIAN_MCP_AUTH=github`).** "Sign in with GitHub" instead of a password,
+so access to your notes gets your GitHub account's two-factor authentication, and
+there is no password to guess.
+
+1. Create a GitHub OAuth App: GitHub → *Settings → Developer settings → OAuth Apps →
+   New OAuth App*. Homepage URL: your server's URL. Authorization callback URL:
+   `https://<domain>/auth/callback`. Generate a client secret.
+2. In `.env`: `OBSIDIAN_MCP_AUTH=github`, `OBSIDIAN_MCP_GITHUB_CLIENT_ID`,
+   `OBSIDIAN_MCP_GITHUB_CLIENT_SECRET`, and `OBSIDIAN_MCP_ALLOWED_USERS` with your GitHub
+   username. Recommended: `OBSIDIAN_MCP_JWT_KEY` (`openssl rand -hex 32`); without it the
+   signing key is derived from the client secret, so rotating the secret logs everyone out.
+3. Connect Claude as usual. You'll see a consent page from your server, then GitHub's
+   sign-in.
+
+How it is protected:
+
+- **The allowlist is mandatory.** Without it any GitHub account could sign in, so the
+  server refuses to start when `OBSIDIAN_MCP_ALLOWED_USERS` is empty.
+- It is checked **at sign-in** (an account outside it gets no token, and nothing is
+  stored for it) and **on every request** (removing a name, or revoking the app on
+  GitHub, cuts access within 5 minutes).
+- The server asks GitHub only for `read:user`: your identity, no access to repos or email.
+- Logins are matched case-insensitively. If you rename your GitHub account, update the list,
+  since someone else could later claim the old name.
+- OAuth state (registered clients, encrypted GitHub tokens) is kept in
+  `/data/state/fastmcp`, so a redeploy doesn't log Claude out.
+- Each request is checked against GitHub's API, with results cached for 5 minutes. If
+  GitHub is down, requests fail until it is back.
+
+**Both methods:**
+
+- Only redirects to claude.ai/claude.com, to chatgpt.com (ChatGPT developer mode) and
+  to loopback addresses (Claude Code) are accepted (`OBSIDIAN_MCP_ALLOWED_REDIRECTS` to change).
+- `OBSIDIAN_MCP_TOKEN` adds an optional fixed bearer token for Claude Code. It never
+  expires, so leave it unset unless you need it.
 - The Git token reaches git through a credential helper reading the environment: it is
   never written into `.git/config` or the remote URL.
 
@@ -174,7 +212,11 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_VAULT` | *(required)* | Absolute path to the vault (cloned there if Git sync is on) |
 | `OBSIDIAN_MCP_TRANSPORT` | `stdio` | `stdio` or `http` |
 | `OBSIDIAN_MCP_PUBLIC_URL` | — | HTTP mode: public base URL, e.g. `https://mcp.example.com` |
-| `OBSIDIAN_MCP_PASSWORD` | — | HTTP mode: login password (12+ characters) |
+| `OBSIDIAN_MCP_AUTH` | `password` | HTTP mode: login method, `password` or `github` |
+| `OBSIDIAN_MCP_PASSWORD` | — | Password login: the password (12+ characters) |
+| `OBSIDIAN_MCP_GITHUB_CLIENT_ID` / `_SECRET` | — | GitHub login: from your GitHub OAuth App |
+| `OBSIDIAN_MCP_ALLOWED_USERS` | — | GitHub login: comma-separated GitHub usernames allowed in (required) |
+| `OBSIDIAN_MCP_JWT_KEY` | *(derived)* | GitHub login: key signing the tokens issued to Claude (32+ characters) |
 | `OBSIDIAN_MCP_TOKEN` | *(unset)* | HTTP mode: optional static bearer token (32+ characters) |
 | `OBSIDIAN_MCP_HOST` / `OBSIDIAN_MCP_PORT` | `0.0.0.0` / `8000` | HTTP listen address |
 | `OBSIDIAN_MCP_STATE_DIR` | `~/.local/state/obsidian-mcp` | Where OAuth clients and tokens are stored |
@@ -238,21 +280,24 @@ pip install -e . pytest
 pytest
 ```
 
-`tests/test_http.py` starts a real server and walks through the OAuth flow claude.ai
-uses, against a local Git remote standing in for GitHub.
+Python 3.11 or newer. `tests/test_http.py` starts a real server and walks through the
+OAuth flow claude.ai uses, against a local Git remote standing in for GitHub.
+`tests/test_github_auth.py` covers the GitHub login's allowlist with a fake GitHub, and
+`tests/test_tools_unchanged.py` fails if a tool's definition changes by accident.
 
 ## Layout
 
 ```
 src/obsidian_mcp/
-  server.py      entrypoint: settings, OAuth wiring, transport
+  server.py      entrypoint: FastMCP server, login method, transport
   tools/         the MCP tools (notes, graph, attachments, vaults) and how they run
   notes.py       note operations on disk
   links.py       tags, wikilinks, backlinks, orphans
   pdf.py         PDF text extraction
   sync.py        Git clone / pull / commit / push, with conflict handling
   vault.py       vault selection and path safety
-  auth.py        OAuth provider and the password page
+  auth.py        password login: OAuth provider and the password page
+  github_auth.py GitHub login: FastMCP's GitHub provider plus the allowlist
   config.py      environment settings
 ```
 
@@ -271,6 +316,8 @@ Forked from [Axel687/mcp_obsiCC_IOS](https://github.com/Axel687/mcp_obsiCC_IOS) 
   the shared Caddy sites setup.
 - Client registration no longer evicts a client that is logged in.
 - Docker Compose publishes Caddy on one address (`MCP_BIND_IP`) and sets memory limits.
+- Moved from the MCP SDK's `MCPServer` to [FastMCP](https://gofastmcp.com) 4, and added
+  "Sign in with GitHub" as an alternative to the password. Requires Python 3.11.
 
 ## License
 
