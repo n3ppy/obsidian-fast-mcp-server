@@ -1,9 +1,10 @@
-"""Minimal single-user OAuth 2.1 authorization server for the HTTP mode.
+"""Password login: a minimal single-user OAuth 2.1 authorization server.
 
-claude.ai custom connectors (and through them the mobile apps) authenticate with
-OAuth: discovery, dynamic client registration, authorization code + PKCE. The MCP SDK
-implements the protocol endpoints; this module supplies the storage and the one
-interactive step, a password page.
+This is the default login method of the HTTP mode (``OBSIDIAN_MCP_AUTH=password``);
+``github_auth.py`` holds the other one. claude.ai custom connectors (and through them
+the mobile apps) authenticate with OAuth: discovery, dynamic client registration,
+authorization code + PKCE. FastMCP and the MCP SDK implement the protocol endpoints;
+this module supplies the storage and the one interactive step, a password page.
 
 Flow, seen from the phone:
 
@@ -42,8 +43,9 @@ from urllib.parse import urlparse
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
+from fastmcp.server.auth import OAuthProvider
+from fastmcp.server.auth.auth import AccessToken
 from mcp.server.auth.provider import (
-    AccessToken,
     AuthorizationCode,
     AuthorizationParams,
     AuthorizeError,
@@ -52,6 +54,7 @@ from mcp.server.auth.provider import (
     TokenError,
     construct_redirect_uri,
 )
+from mcp.server.auth.settings import ClientRegistrationOptions, RevocationOptions
 from mcp.shared.auth import OAuthClientInformationFull, OAuthToken
 
 from .config import Settings
@@ -125,11 +128,17 @@ class _PendingLogin:
     created_at: float
 
 
-class VaultOAuthProvider:
-    """Implements ``mcp.server.auth.provider.OAuthAuthorizationServerProvider``."""
+class VaultOAuthProvider(OAuthProvider):
+    """FastMCP auth provider: the SDK's ``OAuthAuthorizationServerProvider`` methods,
+    backed by a JSON file and a password page."""
 
     def __init__(self, settings: Settings) -> None:
         assert settings.public_url and settings.password
+        super().__init__(
+            base_url=settings.public_url,
+            client_registration_options=ClientRegistrationOptions(enabled=True),
+            revocation_options=RevocationOptions(enabled=True),
+        )
         self.settings = settings
         self.store = _JsonStore(settings.state_dir / "oauth.json")
         self.store.purge_expired()
@@ -417,8 +426,4 @@ def install_login_routes(server: Any, provider: VaultOAuthProvider) -> None:
         if redirect is None:
             return _form(txn, pending, error="Incorrect password.")
         return RedirectResponse(redirect, status_code=302)
-
-    @server.custom_route("/healthz", methods=["GET"])
-    async def healthz(request: Request) -> Response:
-        return Response("ok", media_type="text/plain")
 

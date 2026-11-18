@@ -6,13 +6,19 @@ Two modes:
   subprocess on the same machine. Nothing is exposed on the network.
 - ``http``: the server runs on its own (e.g. in Docker on a VPS) and speaks MCP over
   Streamable HTTP, so that claude.ai, the iOS/Android apps and Claude Code can all
-  reach it. In this mode authentication is mandatory: the server refuses to start
-  without a password.
+  reach it. In this mode authentication is mandatory, with one of two login methods
+  (``OBSIDIAN_MCP_AUTH``):
+
+  - ``password`` (default): a password page served by this server.
+  - ``github``: "Sign in with GitHub" through a GitHub OAuth App, restricted to the
+    GitHub accounts in ``OBSIDIAN_MCP_ALLOWED_USERS``. The server refuses to start
+    with an empty allowlist, since that would let any GitHub account in.
 """
 
 from __future__ import annotations
 
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -30,6 +36,11 @@ DEFAULT_ALLOWED_REDIRECTS = (
 
 MIN_PASSWORD_LENGTH = 12
 MIN_STATIC_TOKEN_LENGTH = 32
+MIN_JWT_KEY_LENGTH = 32
+
+AUTH_MODES = ("password", "github")
+# GitHub logins: letters, digits and single hyphens, at most 39 characters.
+_GITHUB_LOGIN_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9]|-(?=[A-Za-z0-9])){0,38}$")
 
 
 class ConfigError(Exception):
@@ -55,6 +66,11 @@ class Settings:
     state_dir: Path = field(default_factory=lambda: Path("~/.local/state/obsidian-mcp").expanduser())
     allowed_redirects: tuple[str, ...] = DEFAULT_ALLOWED_REDIRECTS
     pull_interval: float = 30.0
+    auth: str = "password"
+    github_client_id: str | None = None
+    github_client_secret: str | None = None
+    allowed_users: tuple[str, ...] = ()  # GitHub logins, lowercased
+    jwt_key: str | None = None
 
     @property
     def is_http(self) -> bool:
@@ -98,6 +114,15 @@ def load_settings() -> Settings:
         ).expanduser(),
         allowed_redirects=allowed_redirects,
         pull_interval=float(_env("OBSIDIAN_PULL_INTERVAL", "30") or 30),
+        auth=(_env("OBSIDIAN_MCP_AUTH", "password") or "password").lower(),
+        github_client_id=_env("OBSIDIAN_MCP_GITHUB_CLIENT_ID"),
+        github_client_secret=_env("OBSIDIAN_MCP_GITHUB_CLIENT_SECRET"),
+        allowed_users=tuple(
+            u.strip().lower()
+            for u in (_env("OBSIDIAN_MCP_ALLOWED_USERS", "") or "").split(",")
+            if u.strip()
+        ),
+        jwt_key=_env("OBSIDIAN_MCP_JWT_KEY"),
     )
 
     if is_http:
@@ -115,10 +140,32 @@ def _validate_http(settings: Settings) -> None:
         ("http://localhost", "http://127.0.0.1")
     ):
         problems.append("OBSIDIAN_MCP_PUBLIC_URL must use https:// (OAuth requires it)")
-    if not settings.password:
-        problems.append("OBSIDIAN_MCP_PASSWORD is required in HTTP mode")
-    elif len(settings.password) < MIN_PASSWORD_LENGTH:
-        problems.append(f"OBSIDIAN_MCP_PASSWORD must be at least {MIN_PASSWORD_LENGTH} characters")
+    if settings.auth not in AUTH_MODES:
+        problems.append(f"OBSIDIAN_MCP_AUTH must be one of {', '.join(AUTH_MODES)}, got {settings.auth!r}")
+    elif settings.auth == "password":
+        if not settings.password:
+            problems.append("OBSIDIAN_MCP_PASSWORD is required with OBSIDIAN_MCP_AUTH=password")
+        elif len(settings.password) < MIN_PASSWORD_LENGTH:
+            problems.append(f"OBSIDIAN_MCP_PASSWORD must be at least {MIN_PASSWORD_LENGTH} characters")
+    else:
+        if not settings.github_client_id or not settings.github_client_secret:
+            problems.append(
+                "OBSIDIAN_MCP_GITHUB_CLIENT_ID and OBSIDIAN_MCP_GITHUB_CLIENT_SECRET are required "
+                "with OBSIDIAN_MCP_AUTH=github (from your GitHub OAuth App)"
+            )
+        if not settings.allowed_users:
+            problems.append(
+                "OBSIDIAN_MCP_ALLOWED_USERS is required with OBSIDIAN_MCP_AUTH=github: without it "
+                "any GitHub account could sign in. List the GitHub usernames allowed, comma-separated."
+            )
+        bad = [u for u in settings.allowed_users if not _GITHUB_LOGIN_RE.match(u)]
+        if bad:
+            problems.append(f"OBSIDIAN_MCP_ALLOWED_USERS has invalid GitHub usernames: {', '.join(bad)}")
+        if settings.jwt_key is not None and len(settings.jwt_key) < MIN_JWT_KEY_LENGTH:
+            problems.append(
+                f"OBSIDIAN_MCP_JWT_KEY must be at least {MIN_JWT_KEY_LENGTH} characters "
+                "(generate one with: openssl rand -hex 32)"
+            )
     if settings.static_token is not None and len(settings.static_token) < MIN_STATIC_TOKEN_LENGTH:
         problems.append(
             f"OBSIDIAN_MCP_TOKEN must be at least {MIN_STATIC_TOKEN_LENGTH} characters "

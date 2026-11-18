@@ -163,8 +163,9 @@ def oauth_login(base: str) -> dict[str, Any]:
     status, _, body = http("POST", base + "/token", form=token_form)
     assert status == 200, body
     tokens = json.loads(body)
-    # Codes are single-use.
-    assert http("POST", base + "/token", form=token_form)[0] == 400
+    # Codes are single-use. (The MCP spec wants 401 for an invalid grant, not 400.)
+    status, _, body = http("POST", base + "/token", form=token_form)
+    assert status == 401 and json.loads(body)["error"] == "invalid_grant", body
     return {"client_id": client_id, **tokens}
 
 
@@ -290,7 +291,8 @@ def test_full_flow_and_sync(setup) -> None:
     assert status == 200, body
     new = json.loads(body)
     assert Mcp(base, tokens["access_token"]).rpc("tools/list")[0] == 401
-    assert http("POST", base + "/token", form=form)[0] == 400  # old refresh token is spent
+    status, _, body = http("POST", base + "/token", form=form)  # old refresh token is spent
+    assert status == 401 and json.loads(body)["error"] == "invalid_grant", body
 
     # Tokens survive a restart (claude.ai shouldn't have to reconnect after a deploy).
     setup["stop"]()
