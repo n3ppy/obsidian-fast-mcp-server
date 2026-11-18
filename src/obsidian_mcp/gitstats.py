@@ -119,3 +119,37 @@ def file_url(vault: str, path: str) -> str | None:
     from urllib.parse import quote
 
     return f"{base}/blob/HEAD/{quote(path)}"
+
+
+_last_cache: dict[str, tuple[str, dict[str, tuple[float, bool]]]] = {}
+
+
+def last_changes(vault: str, limit: int = 20000) -> dict[str, tuple[float, bool]]:
+    """For each path in the history: when it last changed and whether Claude made that
+    change. Cached per HEAD, so it reruns only after a new commit."""
+    with use_vault(vault) as v:
+        head = sync.head()
+        if head is None:
+            return {}
+        with _cache_lock:
+            hit = _last_cache.get(v.name)
+        if hit and hit[0] == head:
+            return hit[1]
+        result = sync._git(  # noqa: SLF001 - same package
+            "log", f"--max-count={limit}", "--no-merges", "--format=%x1e%ct%x1f%s", "--name-only",
+            cwd=v.path, check=False,
+        )
+    found: dict[str, tuple[float, bool]] = {}
+    if result.returncode == 0:
+        for chunk in result.stdout.split("\x1e"):  # newest first: keep the first sighting
+            lines = chunk.strip("\n").split("\n")
+            parts = lines[0].split("\x1f") if lines and lines[0] else []
+            if len(parts) != 2:
+                continue
+            ts, subject = float(parts[0]), parts[1]
+            for path in lines[1:]:
+                if path.strip() and path not in found:
+                    found[path] = (ts, subject.startswith(CLAUDE_PREFIX))
+    with _cache_lock:
+        _last_cache[v.name] = (head, found)
+    return found

@@ -103,6 +103,36 @@ ul.plain { list-style:none; padding:0; margin:8px 0 0; } ul.plain li { padding:3
   table.events td.commit:empty { display:none; }
   table.events td.commit { grid-column:1 / -1; font-size:13px; }
 }
+.bar { display:flex; flex-wrap:wrap; align-items:center; justify-content:space-between; gap:8px 16px; margin:0 0 12px; }
+.bar h2 { margin:0; }
+details.health { margin-top:16px; } details.health > p, details.health > details { margin:8px 0 0 12px; }
+input.filter { flex:1; min-width:180px; max-width:320px; }
+.tree, ul.results { font-size:14px; }
+.tree ul, ul.results { list-style:none; margin:0; padding:0; }
+.tree ul ul { margin-left:12px; padding-left:8px; border-left:1px solid var(--line); }
+.tree summary { list-style:none; display:flex; align-items:center; gap:6px; padding:4px 6px; border-radius:6px;
+  cursor:pointer; user-select:none; }
+.tree summary::-webkit-details-marker { display:none; }
+.tree summary::before { content:""; flex:none; width:6px; height:6px; margin:0 3px 0 1px;
+  border-right:1.5px solid var(--muted); border-bottom:1.5px solid var(--muted); transform:rotate(-45deg);
+  transition:transform .12s; }
+.tree details[open] > summary::before { transform:rotate(45deg); }
+.tree summary:hover, li.f:hover { background:var(--bg); }
+li.f { display:flex; align-items:center; gap:8px; padding:4px 6px 4px 19px; border-radius:6px; min-width:0; }
+ul.results li.f { padding-left:6px; }
+li.vault-label { padding:10px 6px 2px; }
+.file { display:flex; align-items:center; gap:6px; min-width:0; flex:1; color:var(--fg); }
+a.file:hover { text-decoration:none; } a.file:hover .nm { text-decoration:underline; }
+.nm { overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.file .dir { color:var(--muted); font-size:12px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.count { margin-left:auto; font-size:12px; color:var(--muted); font-variant-numeric:tabular-nums; }
+.meta { display:flex; align-items:center; gap:8px; margin-left:auto; flex:none; font-size:12px; color:var(--muted);
+  white-space:nowrap; }
+.badge.ai { background:var(--bg); color:var(--accent); border:1px solid var(--line); font-size:11px; padding:0 6px; }
+.ic { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round;
+  stroke-linejoin:round; color:var(--muted); }
+.ic.folder, .ic.vault { color:var(--accent); } .ic.pdf { color:var(--err); } .ic.image { color:var(--s1); }
+@media (max-width:640px) { .meta .reads { display:none; } .file .dir { display:none; } }
 .login { min-height:100vh; display:grid; place-items:center; padding:16px; }
 .login section { width:100%; max-width:380px; padding:28px 24px; }
 .login h1 { font-size:20px; margin:0 0 6px; }
@@ -121,7 +151,7 @@ def head(title: str) -> tuple[Any, ...]:
     )
 
 
-NAV = [("Overview", ""), ("Activity", "/activity"), ("Notes", "/notes"), ("Health", "/health")]
+NAV = [("Overview", ""), ("Activity", "/activity"), ("Insights", "/insights"), ("Wikis", "/wikis"), ("Health", "/health")]
 
 
 def page(title: str, active: str, user: str | None, csrf: str | None, *content: Any) -> tuple[Any, ...]:

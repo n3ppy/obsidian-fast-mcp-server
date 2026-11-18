@@ -167,7 +167,7 @@ def test_dashboard_requires_sign_in(vault_env) -> None:
     async def check() -> None:
         async with Web(server) as web:
             assert (await web.get("/dash")).headers["location"] == "/dash/"
-            for path in ("/dash/", "/dash/activity", "/dash/notes", "/dash/health", "/dash/fragment/recent"):
+            for path in ("/dash/", "/dash/activity", "/dash/insights", "/dash/wikis", "/dash/health", "/dash/fragment/recent"):
                 resp = await web.get(path)
                 assert resp.status_code == 303 and resp.headers["location"] == "/dash/login", path
             # htmx refreshes are told to go to the login page instead of rendering it inline.
@@ -327,8 +327,13 @@ def test_pages_show_activity_sync_and_vault(vault_env) -> None:
             assert 'class="strip ok"' in overview and "no errors" in overview
             assert "Claude read today" in overview and "Note not found" in overview
             assert overview.count("<svg") == 2
-            assert re.search(r"<b>2</b><span>notes</span>", overview)
-            assert re.search(r"<b>1</b><span>broken links</span>", overview)
+            assert "Most read by Claude" not in overview
+
+            insights = (await web.get("/dash/insights")).text
+            assert re.search(r"<b>2</b><span>notes</span>", insights)
+            assert "Most read by Claude" in insights and "Inbox/Welcome.md" in insights
+            assert "1 broken link" in insights and "Missing" in insights
+            assert 'href="/dash/insights?days=7"' in insights and "most read and changed" in insights
 
             activity = (await web.get("/dash/activity?errors=1")).text
             assert "Nope.md" in activity and "Inbox/Welcome.md" not in activity
@@ -340,9 +345,21 @@ def test_pages_show_activity_sync_and_vault(vault_env) -> None:
             bad = await web.get("/dash/commit/principal/not-a-sha", headers={"HX-Request": "true"})
             assert "not found" in bad.text
 
-            notes = (await web.get("/dash/notes")).text
-            assert "Most read by Claude" in notes and "Inbox/Welcome.md" in notes
-            assert "1 broken link" in notes and "Missing" in notes
+            moved = await web.get("/dash/notes")
+            assert moved.status_code == 301 and moved.headers["location"] == "/dash/insights"
+
+            wikis = (await web.get("/dash/wikis")).text
+            assert 'href="/dash/wikis"' in wikis and 'class="on"' in wikis
+            # Folders first, notes shown without .md, dot folders hidden.
+            assert wikis.index(">Inbox<") < wikis.index(">Other<")
+            assert ".obsidian" not in wikis and ">Welcome<" in wikis
+            assert "2 reads" in wikis  # Claude read Inbox/Welcome.md twice
+            assert 'class="badge ai"' in wikis  # Claude made the last change to Other.md
+            found = (await web.get("/dash/wikis/search?q=welc", headers={"HX-Request": "true"})).text
+            assert ">Welcome<" in found and ">Other<" not in found
+            none = (await web.get("/dash/wikis/search?q=zzz", headers={"HX-Request": "true"})).text
+            assert "No files match" in none
+            assert (await web.get("/dash/wikis/dir/principal?path=../..")).status_code == 404
 
             health = (await web.get("/dash/health")).text
             assert "In sync" in health and "Static token" not in health  # in-memory client: no token
@@ -445,3 +462,22 @@ def test_client_id_is_read_from_the_servers_own_token() -> None:
     assert _jwt_client_id(f"eyJhbGciOiJIUzI1NiJ9.{payload}.sig") == "abc-123"
     assert _jwt_client_id("gho_githubtoken") is None and _jwt_client_id(None) is None
     assert _jwt_client_id("a.!!!.c") is None
+
+
+def test_wiki_tree_lazy_loads_big_vaults(vault_env, monkeypatch) -> None:
+    from obsidian_mcp.dashboard import app as dash_app
+
+    monkeypatch.setattr(dash_app, "LAZY_TREE_ENTRIES", 0)
+    server = make_server()
+
+    async def check() -> None:
+        async with Web(server) as web:
+            await sign_in(web)
+            wikis = (await web.get("/dash/wikis")).text
+            assert 'hx-get="/dash/wikis/dir/principal?path=Inbox"' in wikis
+            assert ">Welcome<" not in wikis
+            inner = (await web.get("/dash/wikis/dir/principal?path=Inbox", headers={"HX-Request": "true"})).text
+            assert ">Welcome<" in inner
+            assert (await web.get("/dash/wikis/dir/nope?path=Inbox")).status_code == 404
+
+    asyncio.run(check())

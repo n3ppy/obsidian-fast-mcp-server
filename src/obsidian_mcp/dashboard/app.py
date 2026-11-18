@@ -356,32 +356,12 @@ def build_app(
 
     @app.get("/")
     def overview(session) -> Any:
-        stats.ensure_snapshots(log, clock)
         daily = stats.daily_activity(log, clock, 30)
         health = stats.sync_health(log)
         week = clock.start_of(clock.days(7)[0])
         errors = stats.errors_by_type(log, week)
         reads_series = [("reads", "Claude reads")]
         change_series = [("claude_commits", "By Claude"), ("device_commits", "From your devices")]
-
-        glance = []
-        for name, vault in _vaults().items():
-            size = stats.vault_size(vault)
-            try:
-                health_links = stats.link_health(name)
-            except VaultError:
-                continue
-            glance.append(Div(
-                H2(name) if len(_vaults()) > 1 else "",
-                Div(
-                    *[Div(Tag(str(v)), Span(k)) for k, v in (
-                        ("notes", size["notes"]), ("folders", size["folders"]),
-                        ("attachments", size["attachments"]), ("orphans", health_links["orphan_count"]),
-                        ("broken links", health_links["broken_count"]),
-                    )],
-                    cls="stats",
-                ),
-            ))
 
         return shell(
             "Overview", "Overview", session,
@@ -402,8 +382,74 @@ def build_app(
                         hx_swap="innerHTML"),
                     P(A("All activity →", href=f"{BASE}/activity"), cls="small")),
             Section(H2("Errors", Small("last 7 days")), errors_table(errors)),
-            Section(H2("Vault at a glance"), *glance) if glance else "",
         )
+
+    @app.get("/insights")
+    def insights(session, days: int = 30) -> Any:
+        days = days if days in (7, 30, 90) else 30
+        stats.ensure_snapshots(log, clock)
+        return shell("Insights", "Insights", session, *top_notes(days), *vault_sections())
+
+    def top_notes(days: int) -> list[Any]:
+        since = time.time() - days * 86400
+        top_read = stats.top_read(log, since)
+        top_changed = stats.top_changed(days)
+        switch = Div(*[A(f"{d} days", href=f"{BASE}/insights?days={d}", cls="on" if d == days else None)
+                       for d in (7, 30, 90)], cls="switch")
+        read_table = Div(Table(
+            Thead(Tr(Th("Note"), Th("Reads"), Th("Last read"))),
+            Tbody(*[Tr(path_cell(r["vault"], r["path"]), Td(str(r["n"]), cls="num"),
+                       Td(fmt.short(r["last_ts"]), cls="when")) for r in top_read]),
+        ), cls="scroll") if top_read else empty("No notes read by Claude in this period.")
+        changed_table = Div(Table(
+            Thead(Tr(Th("File"), Th("Commits"), Th("By Claude"), Th("From devices"))),
+            Tbody(*[Tr(path_cell(r["vault"], r["path"]), Td(str(r["n"]), cls="num"),
+                       Td(str(r["claude"]), cls="num"), Td(str(r["device"]), cls="num")) for r in top_changed]),
+        ), cls="scroll") if top_changed else empty("No commits in this period.")
+        return [
+            Div(H2("Wikis", Small("most read and changed")), switch, cls="bar"),
+            Div(Section(H2("Most read by Claude"), read_table), Section(H2("Most changed"), changed_table),
+                cls="grid2"),
+        ]
+
+    def vault_sections() -> list[Any]:
+        sections = []
+        vaults = _vaults()
+        for name, vault in vaults.items():
+            size = stats.vault_size(vault)
+            try:
+                links_ = stats.link_health(name)
+            except VaultError:
+                continue
+            snaps = log.snapshots(name, 90)
+            growth = (NotStr(charts.stacked_bars(snaps, [("notes", "Notes")], label_key="day",
+                                                 label_fmt=lambda d: d[5:], aria="Notes over time"))
+                      if len(snaps) > 1 else empty("Growth appears here after a second day of snapshots."))
+            summary = " · ".join([
+                plural(links_["orphan_count"], "orphan"), plural(links_["broken_count"], "broken link"),
+                plural(links_["untagged_count"], "untagged note"),
+            ])
+            sections.append(Section(
+                H2(f"Vault: {name}" if len(vaults) > 1 else "Vault"),
+                Div(*[Div(Tag(v), Span(k)) for k, v in (
+                    ("notes", f"{size['notes']:,}"), ("words", f"{size['words']:,}"),
+                    ("folders", f"{size['folders']:,}"), ("attachments", f"{size['attachments']:,}"),
+                    ("PDFs", f"{size['pdfs']:,}"), ("on disk", bytes_label(size["bytes"])),
+                )], cls="stats"),
+                H2("Notes over time", style="margin-top:16px"), growth,
+                Details(
+                    Summary(B("Link health"), Span(f" · {summary}", cls="muted"), cls="small"),
+                    _list_details(f"{plural(links_['orphan_count'], 'orphan')}: notes nothing links to",
+                                  [Li(path_link(name, p)) for p in links_["orphans"]], links_["orphan_count"]),
+                    _list_details(f"{plural(links_['broken_count'], 'broken link')}: links to notes that don't exist",
+                                  [Li(path_link(name, b["note"]), Span(" → ", cls="muted"), b["target"])
+                                   for b in links_["broken"]], links_["broken_count"]),
+                    _list_details(plural(links_["untagged_count"], "untagged note"),
+                                  [Li(path_link(name, p)) for p in links_["untagged"]], links_["untagged_count"]),
+                    cls="health",
+                ),
+            ))
+        return sections
 
     def recent_fragment() -> Any:
         return event_table(log.events(limit=20))
@@ -480,63 +526,113 @@ def build_app(
         return Ul(*items, cls="plain stat-files") if items else P("No file changes.", cls="muted small")
 
     @app.get("/notes")
-    def notes(session, days: int = 30) -> Any:
-        days = days if days in (7, 30, 90) else 30
-        stats.ensure_snapshots(log, clock)
-        since = time.time() - days * 86400
-        top_read = stats.top_read(log, since)
-        top_changed = stats.top_changed(days)
-        switch = Div(*[A(f"{d} days", href=f"{BASE}/notes?days={d}", cls="on" if d == days else None)
-                       for d in (7, 30, 90)], cls="switch")
+    def notes_moved(session) -> Any:
+        return RedirectResponse(f"{BASE}/insights", status_code=301)
 
-        read_table = Div(Table(
-            Thead(Tr(Th("Note"), Th("Reads"), Th("Last read"))),
-            Tbody(*[Tr(path_cell(r["vault"], r["path"]), Td(str(r["n"]), cls="num"),
-                       Td(fmt.short(r["last_ts"]), cls="when")) for r in top_read]),
-        ), cls="scroll") if top_read else empty("No notes read by Claude in this period.")
-        changed_table = Div(Table(
-            Thead(Tr(Th("File"), Th("Commits"), Th("By Claude"), Th("From devices"))),
-            Tbody(*[Tr(path_cell(r["vault"], r["path"]), Td(str(r["n"]), cls="num"),
-                       Td(str(r["claude"]), cls="num"), Td(str(r["device"]), cls="num")) for r in top_changed]),
-        ), cls="scroll") if top_changed else empty("No commits in this period.")
+    # -- wikis: the vault as a file tree ---------------------------------------------
 
-        vault_sections = []
-        for name, vault in _vaults().items():
-            size = stats.vault_size(vault)
-            try:
-                health = stats.link_health(name)
-            except VaultError:
-                continue
-            snaps = log.snapshots(name, 90)
-            growth = (NotStr(charts.stacked_bars(snaps, [("notes", "Notes")], label_key="day",
-                                                 label_fmt=lambda d: d[5:], aria="Notes over time"))
-                      if len(snaps) > 1 else empty("Growth appears here after a second day of snapshots."))
-            title = f"Vault: {name}" if len(_vaults()) > 1 else "Vault"
-            vault_sections.append(Section(
-                H2(title),
-                Div(*[Div(Tag(v), Span(k)) for k, v in (
-                    ("notes", f"{size['notes']:,}"), ("words", f"{size['words']:,}"),
-                    ("folders", f"{size['folders']:,}"), ("attachments", f"{size['attachments']:,}"),
-                    ("PDFs", f"{size['pdfs']:,}"), ("on disk", bytes_label(size["bytes"])),
-                )], cls="stats"),
-                H2("Notes over time", style="margin-top:16px"), growth,
-                H2("Link health", style="margin-top:16px"),
-                _list_details(f"{plural(health['orphan_count'], 'orphan')}: notes nothing links to",
-                              [Li(p) for p in health["orphans"]], health["orphan_count"]),
-                _list_details(f"{plural(health['broken_count'], 'broken link')}: links to notes that don't exist",
-                              [Li(b["note"], Span(" → ", cls="muted"), b["target"]) for b in health["broken"]],
-                              health["broken_count"]),
-                _list_details(f"{plural(health['untagged_count'], 'untagged note')}",
-                              [Li(p) for p in health["untagged"]], health["untagged_count"]),
-            ))
+    def wiki_context(name: str) -> dict[str, Any]:
+        return {"vault": name, "changes": _safe(lambda: gitstats.last_changes(name), {}),
+                "reads": stats.read_counts(log, time.time() - 30 * 86400)}
 
-        return shell(
-            "Notes", "Notes", session,
-            Section(H2("Notes", Small("reads and changes over the period")), switch),
-            Div(Section(H2("Most read by Claude"), read_table), Section(H2("Most changed"), changed_table),
-                cls="grid2"),
-            *vault_sections,
+    def file_item(ctx: dict[str, Any], f: dict[str, Any], show_dir: bool = False) -> Any:
+        vault = ctx["vault"]
+        name = f["name"][:-3] if f["kind"] == "note" else f["name"]
+        label = [icon(f["kind"]), Span(name, cls="nm")]
+        if show_dir and "/" in f["path"]:
+            label.append(Span(f["path"].rsplit("/", 1)[0], cls="dir"))
+        url = gitstats.file_url(vault, f["path"])
+        link = A(*label, href=url, target="_blank", rel="noopener", cls="file", title=f["path"]) if url \
+            else Span(*label, cls="file", title=f["path"])
+        meta = []
+        reads = ctx["reads"].get((vault, f["path"]))
+        if reads:
+            meta.append(Span(plural(reads, "read"), cls="reads", title="Claude's reads, last 30 days"))
+        change = ctx["changes"].get(f["path"])
+        if change:
+            if change[1]:
+                meta.append(Span("Claude", cls="badge ai", title="Claude made the last change"))
+            meta.append(Span(fmt.ago(change[0]).replace(" ago", ""), title=f"Last changed {fmt.when(change[0])}"))
+        return Li(link, Span(*meta, cls="meta"), cls="f")
+
+    def dir_items(ctx: dict[str, Any], node: dict[str, Any], lazy: bool, depth: int = 0) -> list[Any]:
+        items = []
+        for d in node["dirs"]:
+            summary = Summary(icon("folder"), Span(d["name"], cls="nm"), Span(str(d["count"]), cls="count"))
+            if lazy and depth >= 0:
+                query = urlencode({"path": d["path"]})
+                items.append(Li(Details(
+                    summary, Ul(Li("Loading…", cls="muted small f")),
+                    hx_get=f"{BASE}/wikis/dir/{ctx['vault']}?{query}", hx_trigger="toggle once",
+                    hx_target="find ul", hx_swap="innerHTML",
+                )))
+            else:
+                items.append(Li(Details(summary, Ul(*dir_items(ctx, d, lazy, depth + 1)))))
+        items.extend(file_item(ctx, f) for f in node["files"])
+        if not items:
+            items.append(Li("Empty folder", cls="muted small f"))
+        return items
+
+    def vault_tree(name: str, vault: Any) -> Any:
+        root = stats.tree(vault)
+        ctx = wiki_context(name)
+        lazy = root["size"] > LAZY_TREE_ENTRIES
+        body = Ul(*dir_items(ctx, root, lazy))
+        if len(_vaults()) == 1:
+            return body
+        return Ul(Li(Details(
+            Summary(icon("vault"), Span(name, cls="nm"), Span(str(root["count"]), cls="count")), body, open=True,
+        )))
+
+    @app.get("/wikis")
+    def wikis(session) -> Any:
+        vaults = _vaults()
+        trees = [vault_tree(name, vault) for name, vault in vaults.items()]
+        total = sum(stats.tree(v)["count"] for v in vaults.values())
+        search = Input(
+            type="search", name="q", placeholder="Filter files…", aria_label="Filter files", autocomplete="off",
+            hx_get=f"{BASE}/wikis/search", hx_trigger="input changed delay:250ms, search",
+            hx_target="#tree", hx_swap="innerHTML", cls="filter",
         )
+        legend = P("Click a note to open it on GitHub. ", Span("Claude", cls="badge ai"),
+                   " marks notes Claude changed last; read counts cover the last 30 days.",
+                   cls="muted small")
+        return shell(
+            "Wikis", "Wikis", session,
+            NotStr(ICONS),
+            Section(
+                Div(H2("Wikis", Small(plural(total, "file"))), search, cls="bar"),
+                Div(*trees, cls="tree", id="tree") if trees else empty("No vault is configured."),
+                legend,
+            ),
+        )
+
+    @app.get("/wikis/dir/{vault}")
+    def wiki_dir(session, vault: str, path: str = "") -> Any:
+        found = _vaults().get(vault)
+        node = stats.find_dir(stats.tree(found), path) if found else None
+        if node is None:
+            return Response(status_code=404)
+        return tuple(dir_items(wiki_context(vault), node, lazy=True))
+
+    @app.get("/wikis/search")
+    def wiki_search(session, q: str = "") -> Any:
+        vaults = _vaults()
+        if not q.strip():
+            return tuple(vault_tree(name, vault) for name, vault in vaults.items())
+        results, total = [], 0
+        for name, vault in vaults.items():
+            found, n = stats.search_tree(stats.tree(vault), q)
+            total += n
+            ctx = wiki_context(name)
+            if len(vaults) > 1 and found:
+                results.append(Li(B(name), cls="small vault-label"))
+            results.extend(file_item(ctx, f, show_dir=True) for f in found)
+        if not total:
+            return empty(f"No files match \u201c{q}\u201d.")
+        shown = sum(1 for r in results if "f" in (r.attrs.get("class") or "").split())
+        more = P(f"Showing {shown} of {total}.", cls="muted small") if total > shown else ""
+        return Ul(*results, cls="results"), more
 
     def _list_details(summary: str, items: list[Any], total: int) -> Any:
         if not total:
@@ -620,6 +716,32 @@ def build_app(
         )
 
     return app
+
+
+LAZY_TREE_ENTRIES = 1500  # above this, folders load their contents when opened
+
+_ICON_PATHS = {
+    "folder": '<path d="M3 7.5A1.5 1.5 0 0 1 4.5 6h4l2 2h9A1.5 1.5 0 0 1 21 9.5v8a1.5 1.5 0 0 1-1.5 1.5h-15A1.5 1.5 0 0 1 3 17.5z"/>',
+    "vault": '<rect x="3" y="4" width="18" height="16" rx="2"/><path d="M8 4v16"/>',
+    "note": '<path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4M9 12h6M9 16h4"/>',
+    "pdf": '<path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4M9 15h6"/>',
+    "image": '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 9"/>',
+    "file": '<path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/>',
+}
+ICONS = ('<svg width="0" height="0" style="position:absolute" aria-hidden="true">'
+         + "".join(f'<symbol id="i-{k}" viewBox="0 0 24 24">{v}</symbol>' for k, v in _ICON_PATHS.items())
+         + "</svg>")
+
+
+def icon(kind: str) -> Any:
+    return NotStr(f'<svg class="ic {kind}" aria-hidden="true"><use href="#i-{kind}"/></svg>')
+
+
+def _safe(fn: Callable[[], Any], default: Any) -> Any:
+    try:
+        return fn()
+    except VaultError:
+        return default
 
 
 def Tag(text: str) -> Any:  # noqa: N802 - FT-style component

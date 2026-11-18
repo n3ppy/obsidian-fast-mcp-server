@@ -265,6 +265,104 @@ def ensure_snapshots(log: ActivityLog, clock: Clock) -> None:
         log.snapshot(day, name, size["notes"], size["words"], size["attachments"])
 
 
+# -- wikis (file tree) -----------------------------------------------------------------
+
+IMAGE_SUFFIXES = (".png", ".jpg", ".jpeg", ".gif", ".webp", ".svg", ".bmp", ".avif", ".heic")
+_tree_cache: dict[str, tuple[float, dict[str, Any]]] = {}
+
+
+def file_kind(name: str) -> str:
+    lower = name.lower()
+    if lower.endswith(".md"):
+        return "note"
+    if lower.endswith(".pdf"):
+        return "pdf"
+    if lower.endswith(IMAGE_SUFFIXES):
+        return "image"
+    return "file"
+
+
+def tree(vault: Vault) -> dict[str, Any]:
+    """The vault as nested folders, sorted like Obsidian (folders first, then A to Z,
+    ignoring case). Dot folders and files (.obsidian, .git) are left out. Each folder
+    carries ``count`` (files inside it, at any depth) and ``size`` (entries in total).
+    Cached for a minute."""
+    key = str(vault.path)
+    with _cache_lock:
+        hit = _tree_cache.get(key)
+    if hit and time.monotonic() - hit[0] < _VAULT_CACHE_SECONDS:
+        return hit[1]
+
+    def walk(folder: str, rel: str) -> dict[str, Any]:
+        dirs, files = [], []
+        try:
+            entries = list(os.scandir(folder))
+        except OSError:
+            entries = []
+        for entry in entries:
+            if entry.name.startswith("."):
+                continue
+            path = f"{rel}/{entry.name}" if rel else entry.name
+            try:
+                if entry.is_dir(follow_symlinks=False):
+                    dirs.append(walk(entry.path, path))
+                elif entry.is_file(follow_symlinks=False):
+                    files.append({"name": entry.name, "path": path, "kind": file_kind(entry.name)})
+            except OSError:
+                continue
+        dirs.sort(key=lambda d: d["name"].casefold())
+        files.sort(key=lambda f: f["name"].casefold())
+        return {
+            "name": PurePosixPath(rel).name if rel else vault.name, "path": rel, "dirs": dirs, "files": files,
+            "count": len(files) + sum(d["count"] for d in dirs),
+            "size": len(files) + sum(1 + d["size"] for d in dirs),
+        }
+
+    result = walk(str(vault.path), "")
+    with _cache_lock:
+        _tree_cache[key] = (time.monotonic(), result)
+    return result
+
+
+def find_dir(root: dict[str, Any], path: str) -> dict[str, Any] | None:
+    """A folder of the tree by its vault-relative path (looked up, never opened from
+    the path, so a crafted path can't escape the vault)."""
+    node = root
+    for part in [p for p in path.split("/") if p]:
+        node = next((d for d in node["dirs"] if d["name"] == part), None)
+        if node is None:
+            return None
+    return node
+
+
+def search_tree(root: dict[str, Any], query: str, limit: int = 200) -> tuple[list[dict[str, Any]], int]:
+    """Files whose path contains every word of `query` (ignoring case)."""
+    words = query.casefold().split()
+    found: list[dict[str, Any]] = []
+    total = 0
+    stack = [root]
+    while stack:
+        node = stack.pop()
+        for f in node["files"]:
+            if all(w in f["path"].casefold() for w in words):
+                total += 1
+                if len(found) < limit:
+                    found.append(f)
+        stack.extend(reversed(node["dirs"]))
+    found.sort(key=lambda f: f["path"].casefold())
+    return found, total
+
+
+def read_counts(log: ActivityLog, since: float) -> dict[tuple[str, str], int]:
+    marks = ",".join("?" * len(NOTE_READ_TOOLS))
+    rows = log.query(
+        f"SELECT vault, path, COUNT(*) AS n FROM events WHERE kind = 'read' AND ok = 1 "
+        f"AND path IS NOT NULL AND ts >= ? AND tool IN ({marks}) GROUP BY vault, path",
+        (since, *NOTE_READ_TOOLS),
+    )
+    return {(r["vault"], r["path"]): r["n"] for r in rows}
+
+
 # -- health ----------------------------------------------------------------------------
 
 

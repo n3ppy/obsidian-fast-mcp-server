@@ -66,7 +66,7 @@ Top to bottom:
 4. **Recent activity**: the last 20 events, newest first. Each row shows the time,
    the tool, the note path, OK or error, and for writes a link to the commit on GitHub.
    Refreshes every 30 s via HTMX.
-5. **Vault at a glance**: notes, folders, attachments, orphans, broken links.
+5. *Built (round 2):* the vault-at-a-glance row moved to Insights to keep the Overview short.
 
 ### Activity (`/dash/activity`)
 
@@ -74,12 +74,21 @@ The full event log, paged, with filters: date range, tool, reads or writes, erro
 path contains. Each write row expands to show the commit's diff summary (files and lines
 changed), fetched from git on demand, never stored.
 
-### Notes (`/dash/notes`)
+### Wikis (`/dash/wikis`)
 
-- Most-read and most-changed notes (7 / 30 / 90 days).
-- Orphans, broken links, untagged notes: lists with counts, linking to the note on
-  GitHub.
-- Vault size over time (from daily snapshots).
+*Built (round 2):* the Notes page became **Insights** (`/dash/insights`): most read and
+most changed with a 7 / 30 / 90-day switch, vault size and growth, link health collapsed.
+`/dash/notes` redirects there. Tabs: Overview · Activity · Insights · Wikis · Health.
+
+- The vault as a file tree, like Obsidian's file explorer: folders first, then A to Z,
+  dot folders hidden, notes shown without `.md`, a file count on each folder.
+- Each file shows Claude's reads (last 30 days), a "Claude" mark when Claude made the last
+  change, and how long ago it changed (from git).
+- A filter box narrows the vault to matching files as you type.
+- Folders open with the browser's own `<details>`, so the page needs no script of its own; over
+  1,500 entries, folders load their contents when opened.
+- Clicking a note opens it on GitHub. An in-dashboard note view with history, diffs and
+  restore is the planned next step (see Later).
 
 ### Health (`/dash/health`)
 
@@ -147,6 +156,9 @@ small. The Docker image includes it.
 5. Charts and daily vault snapshots.
 
 ## Later (web app direction)
+
+- Version control: a note page in the dashboard (read-only, wikilinks, backlinks), then
+  its history, diffs, and "restore this version".
 
 - Undo a Claude change from the activity row (git revert), the same as the planned
   `revert_change` tool.

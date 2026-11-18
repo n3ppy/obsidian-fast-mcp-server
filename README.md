@@ -171,11 +171,13 @@ e.g. `Australia/Perth`, so days and times are yours).
 
 - **Overview:** a sync status line (green, amber when commits wait to be pushed, red when
   a pull or push fails), today's reads, changes, device commits and errors, 30-day charts,
-  recent activity (refreshed every 30 s), errors of the week, and the vault at a glance.
+  recent activity (refreshed every 30 s), and errors of the week.
 - **Activity:** every tool call, filterable by period, kind, tool, path and errors, with
   a link to each change's commit and the files it touched.
-- **Notes:** most-read and most-changed notes, vault size and growth, orphans, broken
-  links and untagged notes.
+- **Insights:** most-read and most-changed files (7, 30 or 90 days), vault size and
+  growth, and link health (orphans, broken links, untagged notes).
+- **Wikis:** the vault as a file tree like Obsidian's, with a filter box. Each file shows
+  Claude's reads, whether Claude made the last change, and when; notes open on GitHub.
 - **Health:** sync per vault, recent sync errors, connected clients, tool speed, server info.
 
 Sign-in uses the server's login method. With GitHub login it reuses the same OAuth App
