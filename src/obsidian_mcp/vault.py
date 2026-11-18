@@ -11,16 +11,20 @@ Several vaults can be served at once:
 
 The vault a tool works on is held in a context variable set by :func:`use_vault`, so
 the helpers below (and every module built on them) need no extra argument.
+
+When the server is embedded in another app (a hosted service with many users), that
+app hands each request its own set of vaults with :func:`use_vaults`. Inside it the
+environment is ignored: a request only ever sees the vaults it was given.
 """
 
 from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator, Mapping
 from contextlib import contextmanager
 from contextvars import ContextVar
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 
@@ -39,6 +43,52 @@ class Vault:
     path: Path
     remote: str | None
     main: bool = False
+    # Embedded use: returns the password git should use for `remote` (for example a
+    # short-lived GitHub App token), asked before each network operation. None means
+    # the environment's OBSIDIAN_GIT_TOKEN.
+    credentials: Callable[[], str | None] | None = field(default=None, compare=False, repr=False)
+    # Embedded use: the author of the commits made in this vault (default: environment).
+    git_name: str | None = None
+    git_email: str | None = None
+
+    @property
+    def key(self) -> str:
+        """Identifies the vault in caches, locks and sync state. Names can repeat across
+        the workspaces of an embedding app, paths can't."""
+        return str(self.path)
+
+
+@dataclass(frozen=True)
+class VaultScope:
+    vaults: dict[str, Vault]
+    empty_message: str | None = None
+
+
+_scope: ContextVar[VaultScope | None] = ContextVar("obsidian_vault_scope", default=None)
+
+
+@contextmanager
+def use_vaults(vaults: Mapping[str, Vault], *, empty_message: str | None = None) -> Iterator[None]:
+    """Serve exactly these vaults to the enclosed code, instead of the environment's.
+
+    `empty_message` is the error given when there are none (for example "connect a
+    vault first"). A vault selected outside the scope does not leak into it.
+    """
+    for name in vaults:
+        if not _NAME_RE.match(name):
+            raise VaultError(f"invalid vault name {name!r} (lowercase letters, digits, - and _)")
+    scope_token = _scope.set(VaultScope(dict(vaults), empty_message))
+    current_token = _current.set(None)
+    try:
+        yield
+    finally:
+        _current.reset(current_token)
+        _scope.reset(scope_token)
+
+
+def scoped() -> bool:
+    """True inside :func:`use_vaults`."""
+    return _scope.get() is not None
 
 
 def _is_remote(value: str) -> bool:
@@ -53,7 +103,11 @@ def main_vault_name() -> str:
 
 
 def configured_vaults() -> dict[str, Vault]:
-    """Every configured vault, main one first. Read from the environment on each call."""
+    """Every configured vault, main one first. Read from the environment on each call,
+    or the vaults given to :func:`use_vaults`."""
+    scope = _scope.get()
+    if scope is not None:
+        return dict(scope.vaults)
     vaults: dict[str, Vault] = {}
     raw_main = (os.environ.get("OBSIDIAN_VAULT") or "").strip()
     main_name = main_vault_name()
@@ -97,6 +151,9 @@ def get_vault(name: str | None = None) -> Vault:
     """The vault called `name`, or the current one (main vault if none is selected)."""
     vaults = configured_vaults()
     if not vaults:
+        scope = _scope.get()
+        if scope is not None:
+            raise VaultError(scope.empty_message or "No vault is connected yet.")
         raise VaultError(
             "OBSIDIAN_VAULT is not set. Point it at the absolute path of your Obsidian vault."
         )

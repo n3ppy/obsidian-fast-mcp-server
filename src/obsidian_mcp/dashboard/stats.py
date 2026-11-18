@@ -11,6 +11,7 @@ import statistics
 import threading
 import time
 from collections import Counter, defaultdict
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from pathlib import PurePosixPath
@@ -29,16 +30,21 @@ STARTED_AT = time.time()
 
 @dataclass
 class Clock:
-    tz: ZoneInfo
+    # A zone, or a function giving the zone of the current request (embedding apps).
+    tz: ZoneInfo | Callable[[], ZoneInfo]
+
+    @property
+    def zone(self) -> ZoneInfo:
+        return self.tz() if callable(self.tz) else self.tz
 
     def day(self, ts: float) -> date:
-        return datetime.fromtimestamp(ts, self.tz).date()
+        return datetime.fromtimestamp(ts, self.zone).date()
 
     def today(self) -> date:
         return self.day(time.time())
 
     def start_of(self, day: date) -> float:
-        return datetime(day.year, day.month, day.day, tzinfo=self.tz).timestamp()
+        return datetime(day.year, day.month, day.day, tzinfo=self.zone).timestamp()
 
     def days(self, n: int) -> list[date]:
         """The last `n` days, oldest first, ending today."""
@@ -177,6 +183,16 @@ def top_changed(days: int, limit: int = 10) -> list[dict[str, Any]]:
 _size_cache: dict[str, tuple[float, dict[str, Any]]] = {}
 _word_cache: dict[str, tuple[float, int]] = {}
 _cache_lock = threading.Lock()
+
+
+def forget(root: Any) -> None:
+    """Drop the sizes, word counts and file tree cached for the vault at `root`."""
+    key = str(root)
+    with _cache_lock:
+        _size_cache.pop(key, None)
+        _tree_cache.pop(key, None)
+        for path in [p for p in _word_cache if p.startswith(key + os.sep)]:
+            del _word_cache[path]
 
 
 def vault_size(vault: Vault) -> dict[str, Any]:
@@ -375,7 +391,7 @@ def sync_health(log: ActivityLog) -> list[dict[str, Any]]:
     except VaultError:
         return []
     for name, vault in vaults.items():
-        entry = status.get(name, {})
+        entry = status.get(vault.key, {})
         counts = None
         if vault.remote:
             try:

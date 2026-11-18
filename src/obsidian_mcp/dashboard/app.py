@@ -11,6 +11,9 @@ and an MCP token never opens the dashboard.
 
 The session is a signed cookie limited to ``/dash`` (7 days). The allowlist is checked
 again on every request, so removing a name locks that person out at once.
+
+- External mode (``external=ExternalAuth(...)``): an embedding app signs people in and
+  chooses their workspace; the dashboard has no login of its own (see ``external.py``).
 """
 
 from __future__ import annotations
@@ -31,11 +34,12 @@ from fasthtml.common import (
 from starlette.requests import Request
 from starlette.responses import HTMLResponse, RedirectResponse, Response
 
-from .. import __version__, gitstats
-from ..activity import ActivityLog
+from .. import __version__, gitstats, workspace
+from ..activity import ActivityLog, ScopedLog
 from ..config import Settings
 from ..vault import VaultError, configured_vaults
 from . import charts, stats
+from .external import ExternalAuth
 from .ui import BASE, Fmt, bytes_label, empty, head, login_page, page, plural, tool_label
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
@@ -107,6 +111,13 @@ def _rel(path: str) -> str:
     return path[len(BASE):] if path.startswith(BASE) else path
 
 
+def _zone(name: str, fallback: ZoneInfo) -> ZoneInfo:
+    try:
+        return ZoneInfo(name)
+    except Exception:  # noqa: BLE001 - unknown name: keep the server's zone
+        return fallback
+
+
 def build_app(
     settings: Settings,
     log: ActivityLog,
@@ -114,16 +125,29 @@ def build_app(
     password_check: Any = None,
     client_names: ClientNames | None = None,
     secret_key: str,
+    external: ExternalAuth | None = None,
 ) -> FastHTML:
-    """The FastHTML app. `password_check` is the password provider (password mode)."""
-    tz = ZoneInfo(settings.timezone)
-    clock = stats.Clock(tz)
-    fmt = Fmt(tz)
-    github = settings.auth == "github"
+    """The FastHTML app. `password_check` is the password provider (password mode);
+    `external` hands sign-in to an embedding app (see ``external.py``)."""
+    server_tz = ZoneInfo(settings.timezone)
+
+    def zone() -> ZoneInfo:
+        """The viewer's time zone: their workspace's, else the server's."""
+        ws = workspace.current()
+        return _zone(ws.timezone, server_tz) if ws is not None and ws.timezone else server_tz
+
+    clock = stats.Clock(zone)
+    fmt = Fmt(zone)
+    log = ScopedLog(log)  # the viewer's own log when the embedding app chose one
+    github = settings.auth == "github" and external is None
+    brand = external.brand if external else "Vault dashboard"
+    login_target = external.login_url if external else f"{BASE}/login"
 
     # -- session and access ----------------------------------------------------------
 
     def current_user(session) -> str | None:
+        if external is not None:
+            return external.user()
         user, at = session.get("user"), session.get("at", 0)
         if not isinstance(user, str) or time.time() - float(at) > SESSION_SECONDS:
             return None
@@ -135,10 +159,11 @@ def build_app(
         if _rel(req.url.path) in PUBLIC_PATHS:
             return None
         if current_user(session) is None:
-            session.clear()
+            if external is None:
+                session.clear()
             if req.headers.get("hx-request"):
-                return Response(status_code=401, headers={"HX-Redirect": f"{BASE}/login"})
-            return RedirectResponse(f"{BASE}/login", status_code=303)
+                return Response(status_code=401, headers={"HX-Redirect": login_target})
+            return RedirectResponse(login_target, status_code=303)
         return None
 
     def start_session(session, user: str) -> None:
@@ -147,7 +172,7 @@ def build_app(
 
     app = FastHTML(
         default_hdrs=False,
-        hdrs=head("Vault dashboard"),
+        hdrs=head(brand),
         canonical=False,
         surreal=False,
         htmx=False,
@@ -158,11 +183,14 @@ def build_app(
         same_site="lax",
         sess_https_only=(settings.public_url or "").startswith("https://"),
         before=Beforeware(before),
-        title="Vault dashboard",
+        title=brand,
     )
     app.add_middleware(_SecurityHeaders)
 
     def shell(title: str, active: str, session, *content: Any) -> tuple[Any, ...]:
+        if external is not None:
+            return page(title, active, external.user(), external.csrf(), *content, brand=brand,
+                        extra_nav=external.nav, logout_action=external.logout_url)
         return page(title, active, current_user(session), session.get("csrf"), *content)
 
     # -- sign in ---------------------------------------------------------------------
@@ -198,11 +226,13 @@ def build_app(
     def login_get(session) -> Any:
         if current_user(session):
             return RedirectResponse(f"{BASE}/", status_code=303)
+        if external is not None:
+            return RedirectResponse(external.login_url, status_code=303)
         return login_form()
 
     @app.post("/login")
     async def login_post(request: Request, session) -> Any:
-        if github or password_check is None:
+        if github or password_check is None or external is not None:
             return Response(status_code=404)
         form = await request.form()
         if password_check.locked_out():
@@ -247,6 +277,8 @@ def build_app(
 
     @app.post("/logout")
     async def logout(request: Request, session) -> Any:
+        if external is not None:
+            return Response(status_code=404)  # the embedding app signs people out
         form = await request.form()
         token = session.get("csrf")
         if not token or not secrets.compare_digest(str(form.get("csrf", "")), token):
@@ -362,9 +394,11 @@ def build_app(
         errors = stats.errors_by_type(log, week)
         reads_series = [("reads", "Claude reads")]
         change_series = [("claude_commits", "By Claude"), ("device_commits", "From your devices")]
+        banner = external.banner() if external is not None and external.banner is not None else None
 
         return shell(
             "Overview", "Overview", session,
+            banner if banner is not None else "",
             status_strip(health),
             Div(*[tile(t) for t in stats.tiles(daily)], cls="tiles"),
             Div(
@@ -698,13 +732,14 @@ def build_app(
 
         rows = log.query("SELECT COUNT(*) AS n, MIN(ts) AS first FROM events")[0]
         retention = "forever" if settings.activity_days == 0 else plural(settings.activity_days, "day")
+        sign_in = f"{brand} account" if external is not None else "GitHub" if github else "Password"
         info = [
             ("Version", __version__), ("Up since", f"{fmt.when(stats.STARTED_AT)} ({fmt.ago(stats.STARTED_AT)})"),
-            ("Sign-in", "GitHub" if github else "Password"),
+            ("Sign-in", sign_in),
             ("Vaults", ", ".join(stats.vault_names()) or "none"),
             ("Activity log", f"{rows['n']:,} events since {fmt.when(rows['first'])}, {bytes_label(log.size_bytes())}, "
                              f"kept {retention}"),
-            ("Time zone", settings.timezone), ("Pull interval", f"{settings.pull_interval:g} s"),
+            ("Time zone", zone().key), ("Pull interval", f"{settings.pull_interval:g} s"),
         ]
         return shell(
             "Health", "Health", session,

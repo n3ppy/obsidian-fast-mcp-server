@@ -19,6 +19,7 @@ from .activity import ActivityLog, ActivityMiddleware
 from .config import ConfigError, Settings, load_settings
 from .tools import TOOLS
 from .vault import VaultError, main_vault_name
+from .workspace import Resolver, WorkspaceMiddleware
 
 INSTRUCTIONS = """\
 This server is the user's Obsidian vault, their "second brain". Paths are relative to
@@ -82,11 +83,35 @@ def _main_vault() -> str | None:
         return None
 
 
-def build_server(settings: Settings) -> FastMCP:
-    auth, password_provider = _auth(settings)
-    server = FastMCP("obsidian-mcp", instructions=INSTRUCTIONS, auth=auth)
+def build_server(
+    settings: Settings,
+    *,
+    auth: Any = None,
+    workspaces: Resolver | None = None,
+    dashboard_auth: Any = None,
+    name: str = "obsidian-mcp",
+    instructions: str = INSTRUCTIONS,
+) -> FastMCP:
+    """The FastMCP server. Self-hosted mode needs only `settings`.
+
+    An app embedding the server for many users also passes:
+    - `auth`: its own FastMCP auth provider, used instead of the password or GitHub login;
+    - `workspaces`: turns each request's access token into the caller's workspace
+      (``workspace.Workspace``): their vaults, activity log and time zone;
+    - `dashboard_auth`: a ``dashboard.ExternalAuth``, so the dashboard trusts the
+      app's sign-in instead of showing its own.
+    """
+    if auth is not None:
+        password_provider = None
+    else:
+        auth, password_provider = _auth(settings)
+    server = FastMCP(name, instructions=instructions, auth=auth)
     for fn, annotations in TOOLS:
         server.tool(fn, annotations=annotations)
+
+    if workspaces is not None:
+        # First, so the activity log and every tool run inside the caller's workspace.
+        server.add_middleware(WorkspaceMiddleware(workspaces))
 
     log = _activity_log(settings)
     if log is not None:
@@ -104,7 +129,10 @@ def build_server(settings: Settings) -> FastMCP:
             client = await getter(client_id) if getter else None
             return getattr(client, "client_name", None) if client else None
 
-        install(server, settings, log, password_check=password_provider, client_names=client_names)
+        install(
+            server, settings, log, password_check=password_provider, client_names=client_names,
+            external=dashboard_auth,
+        )
 
     if password_provider is not None:
         from .auth import install_login_routes

@@ -9,6 +9,9 @@ covered by one hook. Writes that end in a git commit also record the commit, thr
 :func:`note_commit` (called from the tool runtime while the git lock is held).
 
 Logging must never break a tool call: any failure here is printed and ignored.
+
+An embedding app with several users gives each request its own log with
+:func:`use_log`; the middleware and the dashboard then read and write that one.
 """
 
 from __future__ import annotations
@@ -19,6 +22,8 @@ import sqlite3
 import sys
 import threading
 import time
+from collections.abc import Iterator
+from contextlib import contextmanager
 from contextvars import ContextVar
 from dataclasses import dataclass
 from pathlib import Path, PurePosixPath
@@ -32,6 +37,8 @@ _ERROR_LIMIT = 300  # characters of an error message kept
 # Set by the middleware for the duration of one tool call; the tool runtime adds the
 # commit to it. A mutable dict, so a tool running in a worker thread can fill it in.
 _current: ContextVar[dict[str, Any] | None] = ContextVar("obsidian_activity", default=None)
+# The log of the current request, when an embedding app chose one (see use_log).
+_scope: ContextVar["ActivityLog | None"] = ContextVar("obsidian_activity_log", default=None)
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS events (
@@ -221,6 +228,48 @@ class ActivityLog:
             self._db.close()
 
 
+# -- one log per request (embedding apps) -----------------------------------------------
+
+_scoped_none: ContextVar[bool] = ContextVar("obsidian_activity_log_off", default=False)
+
+
+@contextmanager
+def use_log(log: ActivityLog | None) -> Iterator[None]:
+    """Record and read activity in `log` for the enclosed code. None turns logging off
+    there (rather than falling back to the server's own log)."""
+    token = _scope.set(log)
+    off = _scoped_none.set(log is None)
+    try:
+        yield
+    finally:
+        _scoped_none.reset(off)
+        _scope.reset(token)
+
+
+def current_log(default: ActivityLog | None) -> ActivityLog | None:
+    """The log chosen with :func:`use_log`, else `default`."""
+    if _scoped_none.get():
+        return None
+    return _scope.get() or default
+
+
+class ScopedLog:
+    """Stands in for an :class:`ActivityLog`, forwarding every call to the log of the
+    current request (or to `default` outside any :func:`use_log`)."""
+
+    def __init__(self, default: ActivityLog) -> None:
+        self._default = default
+
+    def _target(self) -> ActivityLog:
+        log = current_log(self._default)
+        if log is None:
+            raise RuntimeError("no activity log for this request")
+        return log
+
+    def __getattr__(self, name: str) -> Any:
+        return getattr(self._target(), name)
+
+
 # -- recording tool calls --------------------------------------------------------------
 
 
@@ -289,8 +338,8 @@ def _bearer() -> str | None:
 class ActivityMiddleware(Middleware):
     """FastMCP middleware recording every tool call into an :class:`ActivityLog`."""
 
-    def __init__(self, log: ActivityLog, kinds: dict[str, str], main_vault: str | None = None) -> None:
-        self.log = log
+    def __init__(self, log: ActivityLog | None, kinds: dict[str, str], main_vault: str | None = None) -> None:
+        self.log = log  # the server's own log; a request's own log (use_log) wins
         self.kinds = kinds  # tool name -> read | write | sync
         self.main_vault = main_vault
 
@@ -325,7 +374,10 @@ class ActivityMiddleware(Middleware):
                         break
             if path and name != "list_notes" and not PurePosixPath(path).suffix:
                 path += ".md"  # as the tools resolve it, so one note has one path in the log
-            vault = content.get("vault") or args.get("vault") or self.main_vault
+            log = current_log(self.log)
+            if log is None:
+                return
+            vault = content.get("vault") or args.get("vault") or self._main_vault()
             sync_status = holder.get("sync")
             if content.get("sync_error"):
                 sync_status = f"error: {content['sync_error']}"
@@ -334,7 +386,7 @@ class ActivityMiddleware(Middleware):
             error = None if ok else str(exc) if exc else content.get("error")
             error_type = None if ok else (type(exc).__name__ if exc else content.get("type"))
             client_id, user = _caller()
-            self.log.record(
+            log.record(
                 Event(
                     ts=time.time(),
                     tool=name,
@@ -353,3 +405,15 @@ class ActivityMiddleware(Middleware):
             )
         except Exception as log_exc:  # noqa: BLE001 - logging must never break a tool
             _warn(f"could not record {name}: {log_exc}")
+
+    def _main_vault(self) -> str | None:
+        """The vault a call without `vault` used: the first of the request's vaults when
+        an embedding app chose them, else the server's main vault."""
+        from .vault import VaultError, configured_vaults, scoped
+
+        if not scoped():
+            return self.main_vault
+        try:
+            return next(iter(configured_vaults()), None)
+        except VaultError:
+            return None

@@ -288,6 +288,39 @@ Git repo, clone and sync. Every vault tool then takes an optional `vault` argume
 MCP has no session the server could remember the choice in (the protocol is stateless),
 so the choice lives in the conversation: the AI repeats `vault` on each call.
 
+## Embedding (one server, many users)
+
+Everything above is the self-hosted mode: one owner, vaults from the environment. An
+app can also embed the server to serve many people, each with their own vaults. Build
+it with `build_server` and three hooks:
+
+```python
+from obsidian_mcp.dashboard import ExternalAuth
+from obsidian_mcp.server import build_server
+from obsidian_mcp.vault import Vault
+from obsidian_mcp.workspace import Workspace
+
+def workspace_for(token):  # the caller's verified access token
+    account = accounts.find(token.subject)  # your own lookup
+    if account is None:
+        return None  # an empty workspace: no vaults, nothing logged
+    vault = Vault("notes", account.dir / "vault", account.repo_url, main=True,
+                  credentials=account.git_token)  # called before each pull/push
+    return Workspace(vaults={"notes": vault}, log=account.activity_log,
+                     timezone=account.timezone, label=account.email)
+
+server = build_server(settings, auth=your_auth_provider, workspaces=workspace_for,
+                      dashboard_auth=ExternalAuth(...))  # optional, see dashboard/external.py
+```
+
+Each MCP request then runs inside the caller's workspace: tools only see its vaults (a
+caller the app doesn't know gets none, never the environment's), activity goes to its
+own log, and git work on different vaults doesn't wait on one lock. A vault's
+`credentials` function gives git a token per vault (for example a short-lived GitHub App
+token), so the operator's `OBSIDIAN_GIT_TOKEN` never reaches another user's repository.
+With `dashboard_auth`, the dashboard trusts the app's sign-in and shows the workspace
+the app chose for the request. `tests/test_workspaces.py` shows the whole setup.
+
 ## Tools
 
 All vault tools below also accept `vault` (see above).
@@ -327,6 +360,7 @@ OAuth flow claude.ai uses, against a local Git remote standing in for GitHub.
 `tests/test_github_auth.py` covers the GitHub login's allowlist with a fake GitHub, and
 `tests/test_tools_unchanged.py` fails if a tool's definition changes by accident, and
 `tests/test_dashboard.py` covers the activity log, dashboard sign-in and pages.
+`tests/test_workspaces.py` covers embedding: users can't see each other's vaults.
 
 ## Layout
 
@@ -344,6 +378,7 @@ src/obsidian_mcp/
   config.py      environment settings
   activity.py    activity log: one row per tool call (SQLite)
   gitstats.py    read-only views of the vault's git history
+  workspace.py   embedding: one workspace (vaults, log, time zone) per caller
   dashboard/     the /dash web app (FastHTML): sign-in, pages, stats, SVG charts
 ```
 
@@ -365,6 +400,8 @@ Forked from [Axel687/mcp_obsiCC_IOS](https://github.com/Axel687/mcp_obsiCC_IOS) 
 - Moved from the MCP SDK's `MCPServer` to [FastMCP](https://gofastmcp.com) 4, and added
   "Sign in with GitHub" as an alternative to the password. Requires Python 3.11.
 - Added an activity log and an optional web dashboard (`/dash`).
+- Can be embedded by an app serving many users (workspaces, per-vault git credentials
+  and locks), and handles a first push to an empty repository.
 
 ## License
 

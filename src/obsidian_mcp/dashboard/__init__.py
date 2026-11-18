@@ -19,7 +19,10 @@ from starlette.routing import Mount
 
 from ..activity import ActivityLog
 from ..config import Settings
+from .external import ExternalAuth
 from .ui import BASE
+
+__all__ = ["BASE", "ExternalAuth", "http_middleware", "install", "session_secret"]
 
 
 def session_secret(settings: Settings) -> str:
@@ -72,15 +75,16 @@ def http_middleware(settings: Settings) -> list[Middleware]:
 
 def install(
     server: Any, settings: Settings, log: ActivityLog, *, password_check: Any = None,
-    client_names: Any = None,
+    client_names: Any = None, external: ExternalAuth | None = None,
 ) -> None:
     """Mount the dashboard on the FastMCP server's HTTP app (routes added this way are
-    public to the MCP auth layer; the dashboard does its own sign-in)."""
+    public to the MCP auth layer; the dashboard does its own sign-in, or trusts
+    `external`)."""
     from .app import build_app
 
     app = build_app(
         settings, log, password_check=password_check, client_names=client_names,
-        secret_key=session_secret(settings),
+        secret_key=session_secret(settings), external=external,
     )
     routes = getattr(server, "_additional_http_routes", None)
     if not isinstance(routes, list):

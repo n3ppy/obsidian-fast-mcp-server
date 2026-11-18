@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import time
+from collections.abc import Callable
 from datetime import datetime
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -154,33 +155,43 @@ def head(title: str) -> tuple[Any, ...]:
 NAV = [("Overview", ""), ("Activity", "/activity"), ("Insights", "/insights"), ("Wikis", "/wikis"), ("Health", "/health")]
 
 
-def page(title: str, active: str, user: str | None, csrf: str | None, *content: Any) -> tuple[Any, ...]:
+def page(
+    title: str, active: str, user: str | None, csrf: str | None, *content: Any,
+    brand: str = "Vault dashboard", extra_nav: tuple[tuple[str, str], ...] = (),
+    logout_action: str | None = None,
+) -> tuple[Any, ...]:
     links = [A(label, href=f"{BASE}{path}/" if not path else f"{BASE}{path}", cls="on" if label == active else None)
              for label, path in NAV]
+    links += [A(label, href=href) for label, href in extra_nav]
     logout = Form(
         Input(type="hidden", name="csrf", value=csrf or ""),
         Button("Sign out", cls="link"),
-        method="post", action=f"{BASE}/logout",
+        method="post", action=logout_action or f"{BASE}/logout",
     )
     return (
-        Title(f"{title} · Vault dashboard"),
-        Header(H1("Vault dashboard"), Nav(*links), Span(user or "", cls="who"), logout),
+        Title(f"{title} · {brand}"),
+        Header(H1(brand), Nav(*links), Span(user or "", cls="who"), logout),
         Main(*content),
     )
 
 
-def login_page(*content: Any, status_title: str = "Sign in") -> tuple[Any, ...]:
+def login_page(*content: Any, status_title: str = "Sign in", brand: str = "Vault dashboard") -> tuple[Any, ...]:
     return (
-        Title(f"{status_title} · Vault dashboard"),
+        Title(f"{status_title} · {brand}"),
         Div(Section(*content), cls="login"),
     )
 
 
 class Fmt:
-    """Formatting in the configured time zone."""
+    """Formatting in the configured time zone (or the zone of the current request,
+    when given a function)."""
 
-    def __init__(self, tz: ZoneInfo) -> None:
-        self.tz = tz
+    def __init__(self, tz: ZoneInfo | Callable[[], ZoneInfo]) -> None:
+        self._tz = tz
+
+    @property
+    def tz(self) -> ZoneInfo:
+        return self._tz() if callable(self._tz) else self._tz
 
     def when(self, ts: float | None) -> str:
         if not ts:
@@ -190,8 +201,9 @@ class Fmt:
     def short(self, ts: float | None) -> str:
         if not ts:
             return "never"
-        dt = datetime.fromtimestamp(ts, self.tz)
-        today = datetime.now(self.tz).date()
+        tz = self.tz
+        dt = datetime.fromtimestamp(ts, tz)
+        today = datetime.now(tz).date()
         return dt.strftime("%H:%M") if dt.date() == today else dt.strftime("%d %b %H:%M")
 
     @staticmethod

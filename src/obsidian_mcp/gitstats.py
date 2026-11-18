@@ -41,7 +41,7 @@ def commits(vault: str, days: int, limit: int = 5000) -> list[Commit]:
         head = sync.head()
         if head is None:
             return []
-        key = (v.name, head, days)
+        key = (v.key, head, days)
         with _cache_lock:
             hit = _cache.get(key)
         if hit and time.monotonic() - hit[0] < _CACHE_SECONDS:
@@ -132,7 +132,7 @@ def last_changes(vault: str, limit: int = 20000) -> dict[str, tuple[float, bool]
         if head is None:
             return {}
         with _cache_lock:
-            hit = _last_cache.get(v.name)
+            hit = _last_cache.get(v.key)
         if hit and hit[0] == head:
             return hit[1]
         result = sync._git(  # noqa: SLF001 - same package
@@ -151,5 +151,13 @@ def last_changes(vault: str, limit: int = 20000) -> dict[str, tuple[float, bool]
                 if path.strip() and path not in found:
                     found[path] = (ts, subject.startswith(CLAUDE_PREFIX))
     with _cache_lock:
-        _last_cache[v.name] = (head, found)
+        _last_cache[v.key] = (head, found)
     return found
+
+
+def forget(key: str) -> None:
+    """Drop the cached history of one vault (by its key)."""
+    with _cache_lock:
+        for stale in [k for k in _cache if k[0] == key]:
+            del _cache[stale]
+        _last_cache.pop(key, None)

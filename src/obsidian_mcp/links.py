@@ -21,7 +21,7 @@ import threading
 import unicodedata
 from collections import Counter
 from dataclasses import asdict, dataclass, field
-from pathlib import PurePosixPath
+from pathlib import Path, PurePosixPath
 from typing import Any
 from urllib.parse import unquote
 
@@ -134,6 +134,13 @@ def _parse(path: str, text: str) -> ParsedNote:
             seen.add(tag.lower())
             note.tags.append(tag)
     return note
+
+
+def forget(root: Path) -> None:
+    """Drop the parsed notes cached for the vault at `root`."""
+    with _cache_lock:
+        for key in {str(root), str(root.resolve())}:
+            _cache.pop(key, None)
 
 
 class VaultIndex:
