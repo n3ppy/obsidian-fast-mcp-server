@@ -8,7 +8,7 @@ from typing import Any
 
 from mcp.types import ToolAnnotations
 
-from .. import sync
+from .. import activity, sync
 from ..vault import Vault, VaultError, configured_vaults, use_vault
 
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -84,7 +84,10 @@ def _with_sync(action: str, path: str, payload: dict[str, Any]) -> dict[str, Any
         status = sync.auto_commit(action, path)
     except VaultError as exc:
         payload["sync_error"] = str(exc)
+        activity.note_commit(None, f"error: {exc}")
     else:
         if status not in _QUIET_SYNC:
             payload["sync"] = status
+        if status.startswith("pushed"):
+            activity.note_commit(sync.head(), status)
     return payload

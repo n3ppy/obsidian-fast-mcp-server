@@ -15,8 +15,10 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from . import sync
+from .activity import ActivityLog, ActivityMiddleware
 from .config import ConfigError, Settings, load_settings
 from .tools import TOOLS
+from .vault import VaultError, main_vault_name
 
 INSTRUCTIONS = """\
 This server is the user's Obsidian vault, their "second brain". Paths are relative to
@@ -53,11 +55,56 @@ def _auth(settings: Settings) -> tuple[Any, Any]:
     return provider, provider
 
 
+def _tool_kinds() -> dict[str, str]:
+    kinds = {}
+    for fn, annotations in TOOLS:
+        if fn.__name__ == "sync_vault":
+            kinds[fn.__name__] = "sync"
+        else:
+            kinds[fn.__name__] = "read" if annotations.read_only_hint else "write"
+    return kinds
+
+
+def _activity_log(settings: Settings) -> ActivityLog | None:
+    if settings.activity_days < 0:
+        return None
+    try:
+        return ActivityLog(settings.state_dir / "activity.db", settings.activity_days)
+    except Exception as exc:  # noqa: BLE001 - the server works without the log
+        _log(f"activity log disabled: {exc}")
+        return None
+
+
+def _main_vault() -> str | None:
+    try:
+        return main_vault_name()
+    except VaultError:
+        return None
+
+
 def build_server(settings: Settings) -> FastMCP:
     auth, password_provider = _auth(settings)
     server = FastMCP("obsidian-mcp", instructions=INSTRUCTIONS, auth=auth)
     for fn, annotations in TOOLS:
         server.tool(fn, annotations=annotations)
+
+    log = _activity_log(settings)
+    if log is not None:
+        server.add_middleware(ActivityMiddleware(log, _tool_kinds(), _main_vault()))
+
+    if settings.is_http and settings.dashboard:
+        if log is None:
+            raise ConfigError("the dashboard needs the activity log, which could not be opened")
+        from .dashboard import install
+
+        oauth = getattr(auth, "server", auth)  # MultiAuth wraps the OAuth provider
+
+        async def client_names(client_id: str) -> str | None:
+            getter = getattr(oauth, "get_client", None)
+            client = await getter(client_id) if getter else None
+            return getattr(client, "client_name", None) if client else None
+
+        install(server, settings, log, password_check=password_provider, client_names=client_names)
 
     if password_provider is not None:
         from .auth import install_login_routes
@@ -71,6 +118,15 @@ def build_server(settings: Settings) -> FastMCP:
     return server
 
 
+def http_middleware(settings: Settings) -> list[Any]:
+    """ASGI middleware for the HTTP app (the dashboard's GitHub callback router)."""
+    if not (settings.is_http and settings.dashboard):
+        return []
+    from .dashboard import http_middleware as dashboard_middleware
+
+    return dashboard_middleware(settings)
+
+
 def main() -> None:
     try:
         settings = load_settings()
@@ -81,7 +137,11 @@ def main() -> None:
     # Clone (if needed) and pull before serving any requests.
     for line in sync.bootstrap_all():
         _log(line)
-    server = build_server(settings)
+    try:
+        server = build_server(settings)
+    except ConfigError as exc:
+        _log(str(exc))
+        sys.exit(2)
 
     if not settings.is_http:
         server.run(show_banner=False)
@@ -91,6 +151,8 @@ def main() -> None:
         f"serving MCP on {settings.mcp_url} (listening on {settings.host}:{settings.port}, "
         f"{settings.auth} login)"
     )
+    if settings.dashboard:
+        _log(f"dashboard on {settings.public_url}/dash/")
     server.run(
         transport="http",
         host=settings.host,
@@ -101,6 +163,7 @@ def main() -> None:
         # TLS is terminated by the reverse proxy, which also fixes the Host header;
         # access control is the OAuth layer, not the Host check.
         host_origin_protection=False,
+        middleware=http_middleware(settings),
     )
 
 

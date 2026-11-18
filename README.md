@@ -18,6 +18,8 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
 - **Git sync** — the vault is a Git repo shared with Obsidian Git on your devices; the
   server pulls before working and commits + pushes after every write.
 - **PDFs** — extract text from any PDF inside the vault, with optional page ranges.
+- **Dashboard** (optional) — a web page showing what Claude read and changed, sync
+  health and vault stats.
 
 Every path is resolved relative to the vault root and checked so it cannot escape it.
 
@@ -161,6 +163,40 @@ How it is protected:
 - The Git token reaches git through a credential helper reading the environment: it is
   never written into `.git/config` or the remote URL.
 
+## Dashboard
+
+An optional web page at `https://<your domain>/dash` showing what Claude has done in the
+vault. Turn it on with `OBSIDIAN_MCP_DASHBOARD=true` (and set `OBSIDIAN_MCP_TIMEZONE`,
+e.g. `Australia/Perth`, so days and times are yours).
+
+- **Overview:** a sync status line (green, amber when commits wait to be pushed, red when
+  a pull or push fails), today's reads, changes, device commits and errors, 30-day charts,
+  recent activity (refreshed every 30 s), errors of the week, and the vault at a glance.
+- **Activity:** every tool call, filterable by period, kind, tool, path and errors, with
+  a link to each change's commit and the files it touched.
+- **Notes:** most-read and most-changed notes, vault size and growth, orphans, broken
+  links and untagged notes.
+- **Health:** sync per vault, recent sync errors, connected clients, tool speed, server info.
+
+Sign-in uses the server's login method. With GitHub login it reuses the same OAuth App
+and allowlist (GitHub returns to the App's `/auth/callback`; the server sends dashboard sign-ins on
+to `/dash`, so nothing changes in the App). With password login it uses the same password, sharing the
+lockout. A dashboard session is a signed cookie limited to `/dash` for 7 days; it never
+grants MCP access, and the allowlist is checked again on every page.
+
+Where the numbers come from:
+
+- **The activity log**, a small SQLite file (`/data/state/activity.db`): one row per tool
+  call with the tool, the note path, the result, the time taken and the commit made.
+  Never note contents, search queries or the text written. Kept 90 days
+  (`OBSIDIAN_MCP_ACTIVITY_DAYS`). It runs even with the dashboard off.
+- **Git history:** commits starting with `obsidian-mcp:` are Claude's, the rest came from
+  your devices. These reach back before the log existed.
+- **The vault on disk**, for sizes and link health.
+
+Only Claude's reads are counted: Obsidian reads files locally, so the server never sees
+your own reading.
+
 ## Obsidian side (iPhone, iPad, PC)
 
 1. Install the community plugin **Git** (by Vinzent) in Obsidian on each device.
@@ -229,6 +265,10 @@ locally, e.g. from a cloud sandbox.
 | `OBSIDIAN_PULL_INTERVAL` | `30` | Min seconds between automatic pulls; `0` = every call, negative = never |
 | `OBSIDIAN_AUTO_PUSH` | `true` | Commit + push after every write |
 | `OBSIDIAN_GIT_NAME` / `OBSIDIAN_GIT_EMAIL` | `Obsidian MCP` / `obsidian-mcp@local` | Commit identity |
+| `OBSIDIAN_MCP_DASHBOARD` | `false` | Serve the dashboard at `/dash` (needs the `dashboard` extra, included in the Docker image) |
+| `OBSIDIAN_MCP_TIMEZONE` | `UTC` | Dashboard: time zone for days and times |
+| `OBSIDIAN_MCP_ACTIVITY_DAYS` | `90` | Days of activity log kept; `0` = forever, `-1` = no log |
+| `OBSIDIAN_MCP_DASHBOARD_SECRET` | *(random, kept in the state dir)* | Dashboard: key signing the session cookie (32+ characters) |
 
 ## Several vaults
 
@@ -276,14 +316,15 @@ folder first, then the shortest path. Tags and links inside code are ignored.
 ## Development
 
 ```bash
-pip install -e . pytest
+pip install -e ".[dashboard]" pytest
 pytest
 ```
 
 Python 3.11 or newer. `tests/test_http.py` starts a real server and walks through the
 OAuth flow claude.ai uses, against a local Git remote standing in for GitHub.
 `tests/test_github_auth.py` covers the GitHub login's allowlist with a fake GitHub, and
-`tests/test_tools_unchanged.py` fails if a tool's definition changes by accident.
+`tests/test_tools_unchanged.py` fails if a tool's definition changes by accident, and
+`tests/test_dashboard.py` covers the activity log, dashboard sign-in and pages.
 
 ## Layout
 
@@ -299,6 +340,9 @@ src/obsidian_mcp/
   auth.py        password login: OAuth provider and the password page
   github_auth.py GitHub login: FastMCP's GitHub provider plus the allowlist
   config.py      environment settings
+  activity.py    activity log: one row per tool call (SQLite)
+  gitstats.py    read-only views of the vault's git history
+  dashboard/     the /dash web app (FastHTML): sign-in, pages, stats, SVG charts
 ```
 
 ## Changes from upstream
@@ -318,6 +362,7 @@ Forked from [Axel687/mcp_obsiCC_IOS](https://github.com/Axel687/mcp_obsiCC_IOS) 
 - Docker Compose publishes Caddy on one address (`MCP_BIND_IP`) and sets memory limits.
 - Moved from the MCP SDK's `MCPServer` to [FastMCP](https://gofastmcp.com) 4, and added
   "Sign in with GitHub" as an alternative to the password. Requires Python 3.11.
+- Added an activity log and an optional web dashboard (`/dash`).
 
 ## License
 

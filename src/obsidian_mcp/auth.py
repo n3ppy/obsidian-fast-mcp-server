@@ -210,6 +210,16 @@ class VaultOAuthProvider(OAuthProvider):
             self._failures = [t for t in self._failures if now - t < LOCKOUT_WINDOW]
             return len(self._failures) >= LOCKOUT_THRESHOLD
 
+    def check_password(self, password: str) -> bool:
+        """Password check for other pages (the dashboard). Failures count towards the
+        same lockout as the OAuth login, so two forms don't double the attempts."""
+        assert self.settings.password
+        with self._lock:
+            if hmac.compare_digest(password.encode(), self.settings.password.encode()):
+                return True
+            self._failures.append(time.time())
+            return False
+
     def pending(self, txn: str) -> _PendingLogin | None:
         with self._lock:
             self._drop_stale_pending()

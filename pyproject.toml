@@ -17,6 +17,13 @@ dependencies = [
     "pypdf>=4.2.0",
 ]
 
+[project.optional-dependencies]
+# The web dashboard at /dash (OBSIDIAN_MCP_DASHBOARD=true).
+dashboard = [
+    "python-fasthtml>=0.14,<0.15",
+    "tzdata",  # time zones on systems without a zone database (slim images)
+]
+
 [project.scripts]
 obsidian-mcp = "obsidian_mcp.server:main"
 

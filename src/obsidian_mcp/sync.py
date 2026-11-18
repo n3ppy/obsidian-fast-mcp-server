@@ -35,6 +35,8 @@ class SyncError(VaultError):
 # Re-entrant: commit_and_push() calls pull logic while already holding it.
 lock = threading.RLock()
 _last_pull: dict[str, float] = {}  # vault name -> monotonic time of last pull
+# vault name -> last pull/push outcomes (wall-clock times), shown on the dashboard.
+_status: dict[str, dict[str, object]] = {}
 
 _CREDENTIAL_HELPER = (
     '!f() { test "$1" = get || exit 0; echo username=x-access-token; '
@@ -64,6 +66,26 @@ def auto_push_enabled() -> bool:
         "no",
         "off",
     }
+
+
+def _note(event: str, error: str | None = None) -> None:
+    """Remember the outcome of a pull or push for the current vault."""
+    try:
+        name = get_vault().name
+    except VaultError:
+        return
+    entry = _status.setdefault(name, {})
+    if error is None:
+        entry[f"last_{event}"] = time.time()
+        entry.pop(f"{event}_error", None)
+    else:
+        entry[f"{event}_error"] = error
+        entry[f"{event}_error_at"] = time.time()
+
+
+def status_snapshot() -> dict[str, dict[str, object]]:
+    """Last pull and push times and errors, per vault name (copies)."""
+    return {name: dict(entry) for name, entry in _status.items()}
 
 
 def _git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
@@ -132,8 +154,10 @@ def _pull_locked(root: Path) -> str:
     message = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
         _abort_rebase_if_needed(root)
+        _note("pull", message)
         raise SyncError(f"git pull failed: {message}")
     _last_pull[get_vault().name] = time.monotonic()
+    _note("pull")
     return message or "up to date"
 
 
@@ -192,21 +216,55 @@ def commit_and_push(message: str) -> str:
 
         push = _git("push", cwd=root, check=False)
         if push.returncode == 0:
+            _note("push")
             return "pushed"
 
         pull_result = _git("pull", "--rebase", "--autostash", cwd=root, check=False)
         if pull_result.returncode != 0:
             _abort_rebase_if_needed(root)
+            detail = (pull_result.stderr or pull_result.stdout).strip()
+            _note("push", f"push rejected and automatic rebase failed: {detail}")
             raise SyncError(
                 "push rejected and automatic rebase failed (your change is committed locally "
                 "and will be pushed once the conflict is resolved on another device): "
-                f"{(pull_result.stderr or pull_result.stdout).strip()}"
+                f"{detail}"
             )
         push = _git("push", cwd=root, check=False)
         if push.returncode != 0:
-            raise SyncError(f"git push failed after rebase: {(push.stderr or push.stdout).strip()}")
+            detail = (push.stderr or push.stdout).strip()
+            _note("push", f"push failed after rebase: {detail}")
+            raise SyncError(f"git push failed after rebase: {detail}")
         _last_pull[get_vault().name] = time.monotonic()
+        _note("pull")
+        _note("push")
         return "pushed (after rebase)"
+
+
+def head() -> str | None:
+    """The current commit of the current vault, or None outside a git repository."""
+    try:
+        result = _git("rev-parse", "HEAD", cwd=vault_root(), check=False)
+    except (VaultError, OSError):
+        return None
+    sha = result.stdout.strip()
+    return sha if result.returncode == 0 and sha else None
+
+
+def ahead_behind() -> tuple[int, int] | None:
+    """(commits not yet pushed, commits not yet pulled) against the last fetch of the
+    upstream branch. No network access. None when there is no upstream."""
+    if not is_enabled():
+        return None
+    try:
+        result = _git(
+            "rev-list", "--left-right", "--count", "HEAD...@{upstream}", cwd=vault_root(), check=False
+        )
+    except (VaultError, OSError):
+        return None
+    parts = result.stdout.split()
+    if result.returncode != 0 or len(parts) != 2:
+        return None
+    return int(parts[0]), int(parts[1])
 
 
 def auto_commit(action: str, path: str) -> str:
