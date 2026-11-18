@@ -147,4 +147,4 @@ def test_tools_expose_vault_parameter() -> None:
     tools = {t.name: t for t in asyncio.run(srv.list_tools())}
     assert "list_vaults" in tools
     for name in ("read_note", "write_note", "search_notes", "vault_overview", "sync_vault"):
-        assert "vault" in tools[name].input_schema["properties"], name
+        assert "vault" in tools[name].parameters["properties"], name

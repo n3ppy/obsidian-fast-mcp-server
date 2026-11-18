@@ -1,0 +1,500 @@
+[
+ {
+  "name": "list_vaults",
+  "description": "The vaults this server can use, main one first. When there are several and the user has not said which one to use, ask them (once per conversation), then pass its name as `vault` to the other tools.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {},
+  "required": []
+ },
+ {
+  "name": "vault_overview",
+  "description": "Map of the vault: note count, folders, most used tags, most linked notes, orphans and unresolved links. A good first call to get oriented. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "list_notes",
+  "description": "List all markdown notes in the vault (optionally scoped to a subdirectory). `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "subdir": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "read_note",
+  "description": "Read a note's full markdown content. `path` is vault-relative; the `.md` suffix is optional. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path"
+  ]
+ },
+ {
+  "name": "search_notes",
+  "description": "Search note contents. Default is case-insensitive substring; pass `regex=true` for regex. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "query": {
+    "type": "string"
+   },
+   "regex": {
+    "type": "boolean",
+    "default": false
+   },
+   "max_results": {
+    "type": "integer",
+    "default": 200
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "query"
+  ]
+ },
+ {
+  "name": "list_tags",
+  "description": "List tags with how many notes use each (frontmatter and inline #tags). With `prefix=\"philo\"`, only `#philo` and nested tags like `#philo/nietzsche`. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "prefix": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "notes_with_tag",
+  "description": "Notes carrying a tag. `#` is optional; nested tags (`tag/sub`) are included by default. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "tag": {
+    "type": "string"
+   },
+   "include_nested": {
+    "type": "boolean",
+    "default": true
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "tag"
+  ]
+ },
+ {
+  "name": "get_backlinks",
+  "description": "Notes that link to this one (wikilinks, embeds and markdown links), with the line containing each link. Accepts a vault path or a bare note name. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path"
+  ]
+ },
+ {
+  "name": "get_links",
+  "description": "Links going out of a note, each resolved to a vault path when the target exists; `unresolved` lists links to notes that don't exist yet. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path"
+  ]
+ },
+ {
+  "name": "find_orphans",
+  "description": "Notes no other note links to. With `include_without_outgoing=true`, only notes that are completely isolated (no links in either direction). `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "include_without_outgoing": {
+    "type": "boolean",
+    "default": false
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": []
+ },
+ {
+  "name": "read_pdf",
+  "description": "Extract text from a PDF stored in the vault. Pages are 1-indexed, inclusive. Set `joined=false` to receive per-page strings instead of a single concatenated text. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "page_start": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "page_end": {
+    "anyOf": [
+     {
+      "type": "integer"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   },
+   "joined": {
+    "type": "boolean",
+    "default": true
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path"
+  ]
+ },
+ {
+  "name": "append_note",
+  "description": "Append text to the end of a note (creates the note if it doesn't exist). `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "content": {
+    "type": "string"
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path",
+   "content"
+  ]
+ },
+ {
+  "name": "insert_under_heading",
+  "description": "Insert text at the end of the section whose heading matches `heading` exactly. If the heading isn't present and `create_if_missing` is true, a new `## heading` section is appended with the content underneath. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "heading": {
+    "type": "string"
+   },
+   "content": {
+    "type": "string"
+   },
+   "create_if_missing": {
+    "type": "boolean",
+    "default": true
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path",
+   "heading",
+   "content"
+  ]
+ },
+ {
+  "name": "write_note",
+  "description": "Create a note (or overwrite if `overwrite=true`). Creates parent directories as needed. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "content": {
+    "type": "string"
+   },
+   "overwrite": {
+    "type": "boolean",
+    "default": false
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path",
+   "content"
+  ]
+ },
+ {
+  "name": "delete_note",
+  "description": "Delete a note from the vault. The deletion is committed, so it can be undone from Git history. `vault`: name of the vault to use (see `list_vaults`). Optional for reading (main vault by default); required for changes when several vaults are configured.",
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": true,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "path": {
+    "type": "string"
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": [
+   "path"
+  ]
+ },
+ {
+  "name": "sync_vault",
+  "description": "Manually sync the vault with its Git remote. `action` can be \"pull\", \"push\", or \"both\" (default). No-op for a vault without a Git remote. Reads already pull automatically every few seconds. Without `vault`, every configured vault is synced.",
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "openWorldHint": false
+  },
+  "parameters": {
+   "action": {
+    "type": "string",
+    "default": "both"
+   },
+   "vault": {
+    "anyOf": [
+     {
+      "type": "string"
+     },
+     {
+      "type": "null"
+     }
+    ],
+    "default": null
+   }
+  },
+  "required": []
+ }
+]
