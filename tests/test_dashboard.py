@@ -209,6 +209,31 @@ def test_password_login_session_and_logout(vault_env) -> None:
     run(check())
 
 
+def test_theme_choice_is_remembered_site_wide(vault_env) -> None:
+    server = make_server()
+
+    async def check() -> None:
+        async with Web(server) as web:
+            await sign_in(web)
+            page = (await web.get("/dash/activity?days=7")).text
+            # Until the viewer picks, the system setting decides; both switches are on the page
+            # (the stylesheet shows one), and each brings the viewer back to this page.
+            assert "data-theme" not in page.split("<head>", 1)[0]
+            assert 'href="/dash/theme?mode=dark&amp;next=/dash/activity%3Fdays%3D7"' in page
+            assert 'href="/dash/theme?mode=light&amp;next=/dash/activity%3Fdays%3D7"' in page
+            picked = await web.get("/dash/theme?mode=dark&next=/dash/activity%3Fdays%3D7")
+            assert picked.status_code == 303 and picked.headers["location"] == "/dash/activity?days=7"
+            cookie = picked.headers["set-cookie"].lower()
+            assert cookie.startswith("theme=dark") and "path=/;" in cookie and "httponly" in cookie
+            assert '<html lang="en" data-theme="dark">' in (await web.get("/dash/")).text
+            # "system" forgets the choice, and the way back never leaves the site.
+            forgot = await web.get("/dash/theme?mode=system&next=//evil.example")
+            assert forgot.status_code == 303 and forgot.headers["location"] == "/dash/"
+            assert "data-theme" not in (await web.get("/dash/")).text.split("<head>", 1)[0]
+
+    run(check())
+
+
 def test_password_lockout_is_shared_with_the_mcp_login(vault_env) -> None:
     server = make_server()
 

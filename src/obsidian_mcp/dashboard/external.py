@@ -27,3 +27,4 @@ class ExternalAuth:
     brand: str = "Vault dashboard"  # name in the header and page titles
     nav: tuple[tuple[str, str], ...] = ()  # extra header links: (label, href)
     banner: Callable[[], Any] | None = None  # shown at the top of the Overview, or None
+    masthead: Any = None  # shown instead of the brand name at the top left (a logo, a link home)

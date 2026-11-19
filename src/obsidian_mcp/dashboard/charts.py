@@ -1,7 +1,10 @@
-"""Small server-rendered SVG charts: no chart library, no script, works with a strict CSP.
+"""Small server-rendered bar charts: HTML and CSS, no chart library, no script.
 
-Colours come from CSS classes (``s0``, ``s1``…) defined in the page stylesheet, so the
-charts follow the light/dark theme.
+Bars are flex columns sized in percent, so text stays crisp at any width and the colours
+follow the page's light/dark theme through CSS classes (``s0``, ``s1``…, defined in the
+stylesheet). Stacked segments sit 2px apart, bars have rounded tops on the baseline, and
+each bar's tooltip lists its values. The whole chart is one image to screen readers,
+named by ``aria``.
 """
 
 from __future__ import annotations
@@ -9,9 +12,6 @@ from __future__ import annotations
 import math
 from html import escape
 from typing import Any
-
-W, H = 640, 180
-PAD_L, PAD_R, PAD_T, PAD_B = 32, 8, 10, 22
 
 
 def _nice_max(value: float) -> int:
@@ -27,43 +27,28 @@ def _nice_max(value: float) -> int:
 
 def stacked_bars(
     rows: list[dict[str, Any]], series: list[tuple[str, str]], label_key: str = "day",
-    label_fmt: Any = str, aria: str = "Chart",
+    label_fmt: Any = str, aria: str = "Chart", *, emphasize_last: bool = False, label_last: bool = False,
 ) -> str:
-    """Stacked bars, one per row. `series` is [(key, legend label)], bottom first."""
-    n = max(len(rows), 1)
+    """Stacked bars, one per row. `series` is [(key, legend label)], bottom first.
+
+    `emphasize_last` tints every bar but the last (today's) in the first series' colour;
+    `label_last` writes the last bar's total above it."""
     totals = [sum(r[k] for k, _ in series) for r in rows]
     top = _nice_max(max(totals, default=0))
-    plot_w, plot_h = W - PAD_L - PAD_R, H - PAD_T - PAD_B
-    slot = plot_w / n
-    bar = max(slot * 0.7, 1.0)
-    parts = [
-        f'<svg class="chart" viewBox="0 0 {W} {H}" role="img" aria-label="{escape(aria)}">'
-    ]
-    for frac in (0, 0.5, 1):
-        y = PAD_T + plot_h * (1 - frac)
-        parts.append(f'<line class="grid" x1="{PAD_L}" x2="{W - PAD_R}" y1="{y:.1f}" y2="{y:.1f}"/>')
-        parts.append(f'<text class="axis" x="{PAD_L - 6}" y="{y + 4:.1f}" text-anchor="end">{int(top * frac)}</text>')
-    for i, row in enumerate(rows):
-        x = PAD_L + i * slot + (slot - bar) / 2
-        y = PAD_T + plot_h
-        tip = escape(f"{label_fmt(row[label_key])}: " + ", ".join(f"{row[k]} {lbl.lower()}" for k, lbl in series))
-        parts.append(f"<g><title>{tip}</title>")
-        for idx, (key, _) in enumerate(series):
-            value = row[key]
-            if not value:
-                continue
-            h = plot_h * value / top
-            y -= h
-            parts.append(f'<rect class="s{idx}" x="{x:.1f}" y="{y:.1f}" width="{bar:.1f}" height="{h:.1f}" rx="1.5"/>')
-        # A transparent full-height target so the tooltip works on empty days too.
-        parts.append(f'<rect class="hit" x="{PAD_L + i * slot:.1f}" y="{PAD_T}" width="{slot:.1f}" height="{plot_h}"/>')
-        parts.append("</g>")
-    # Label the first, middle and last bars.
-    for i in sorted({0, (len(rows) - 1) // 2, len(rows) - 1}) if rows else []:
-        x = PAD_L + i * slot + slot / 2
-        parts.append(f'<text class="axis" x="{x:.1f}" y="{H - 6}" text-anchor="middle">{escape(label_fmt(rows[i][label_key]))}</text>')
-    parts.append("</svg>")
-    return "".join(parts)
+    last = len(rows) - 1
+    cols = []
+    for i, (row, total) in enumerate(zip(rows, totals)):
+        tip = f"{label_fmt(row[label_key])}: " + ", ".join(f"{row[k]} {lbl.lower()}" for k, lbl in series)
+        segments = "".join(f'<i class="s{idx}" style="flex-grow:{row[key]}"></i>'
+                           for idx, (key, _) in enumerate(series) if row[key])
+        value = f'<span class="val">{total}</span>' if label_last and i == last else ""
+        cols.append(f'<div class="{"col last" if i == last else "col"}" title="{escape(tip)}">{value}'
+                    f'<div class="stack" style="height:{100 * total / top:.1f}%">{segments}</div></div>')
+    marks = sorted({0, last // 2, last}) if rows else []
+    axis = "".join(f"<span>{escape(label_fmt(rows[i][label_key]))}</span>" for i in marks)
+    return (f'<div class="chart{" emph" if emphasize_last else ""}" role="img" aria-label="{escape(aria)}">'
+            f'<div class="plot"><span class="ymax">{top}</span>{"".join(cols)}</div>'
+            f'<div class="axis">{axis}</div></div>')
 
 
 def legend(series: list[tuple[str, str]]) -> str:

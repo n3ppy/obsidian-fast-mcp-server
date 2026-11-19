@@ -40,7 +40,10 @@ from ..config import Settings
 from ..vault import VaultError, configured_vaults
 from . import charts, stats
 from .external import ExternalAuth
-from .ui import BASE, Fmt, bytes_label, empty, head, login_page, page, plural, tool_label
+from .ui import (
+    BASE, THEME_COOKIE, THEMES, Fmt, ThemeMiddleware, bytes_label, empty, head, login_page, page, plural, safe_next,
+    theme_attrs, tool_label,
+)
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
 GITHUB_TOKEN = "https://github.com/login/oauth/access_token"
@@ -186,11 +189,12 @@ def build_app(
         title=brand,
     )
     app.add_middleware(_SecurityHeaders)
+    app.add_middleware(ThemeMiddleware)
 
-    def shell(title: str, active: str, session, *content: Any) -> tuple[Any, ...]:
+    def shell(title: str, active: str, session, *content: Any) -> Any:
         if external is not None:
             return page(title, active, external.user(), external.csrf(), *content, brand=brand,
-                        extra_nav=external.nav, logout_action=external.logout_url)
+                        extra_nav=external.nav, logout_action=external.logout_url, masthead=external.masthead)
         return page(title, active, current_user(session), session.get("csrf"), *content)
 
     # -- sign in ---------------------------------------------------------------------
@@ -219,8 +223,20 @@ def build_app(
         """A full page with a chosen status code (FastHTML renders 200 by default)."""
         titles = [c for c in content if getattr(c, "tag", None) == "title"]
         body = [c for c in content if getattr(c, "tag", None) != "title"]
-        doc = Html(Head(*titles, *head("")), Body(*body), lang="en")
-        return HTMLResponse("<!doctype html>\n" + to_xml(doc), status_code=status)
+        doc = Html(Head(*titles, *head("")), Body(*body), lang="en", **theme_attrs())
+        return HTMLResponse(to_xml(doc), status_code=status)  # Html() brings its own doctype
+
+    @app.get("/theme")
+    def set_theme(req: Request, mode: str = "", next: str = "") -> Response:  # noqa: A002 - the query's name
+        """Remember the viewer's light/dark choice in a site-wide cookie; any other mode
+        forgets it, so the system setting decides again."""
+        response = RedirectResponse(safe_next(next, f"{BASE}/"), status_code=303)
+        if mode in THEMES:
+            response.set_cookie(THEME_COOKIE, mode, max_age=365 * 24 * 3600, path="/", samesite="lax", httponly=True,
+                                secure=req.url.scheme == "https")
+        else:
+            response.delete_cookie(THEME_COOKIE, path="/")
+        return response
 
     @app.get("/login")
     def login_get(session) -> Any:
@@ -402,12 +418,13 @@ def build_app(
             status_strip(health),
             Div(*[tile(t) for t in stats.tiles(daily)], cls="tiles"),
             Div(
+                # One series: its title names it, so no legend; today's bar stands out.
                 Section(H2("Claude's reads", Small("last 30 days")),
-                        NotStr(charts.stacked_bars(daily, reads_series, label_fmt=day_label, aria="Reads per day")),
-                        NotStr(charts.legend(reads_series))),
+                        NotStr(charts.stacked_bars(daily, reads_series, label_fmt=day_label, aria="Reads per day",
+                                                   emphasize_last=True, label_last=True))),
                 Section(H2("Changes", Small("git commits, last 30 days")),
                         NotStr(charts.stacked_bars(daily, change_series, label_fmt=day_label,
-                                                   aria="Commits per day")),
+                                                   aria="Commits per day", label_last=True)),
                         NotStr(charts.legend(change_series))),
                 cls="grid2",
             ),
