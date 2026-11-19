@@ -1,8 +1,8 @@
 """Shared page pieces: stylesheet, layout, theme, formatting helpers.
 
-The look: warm paper, near-black ink, hairlines and one violet accent, in light and dark.
-The page follows the system setting until the viewer picks a theme with the header's
-sun/moon link, which is kept in a site-wide ``theme`` cookie (no JavaScript needed).
+The look: warm paper, near-black ink, hairlines and one violet accent. Light is the
+default; the header's sun/moon link switches to dark and back, and the choice is kept in a
+site-wide ``theme`` cookie (no JavaScript needed).
 """
 
 from __future__ import annotations
@@ -53,8 +53,7 @@ _DARK = (
     "--ok:#5fd9ae; --ok-bg:#133226; --warn:#f6c766; --warn-bg:#382d10; --err:#ff8d9c; --err-bg:#3c1a21; "
     "--s0:#8b74f8; --s1:#d95926; --s2:#199e70;"
 )
-_SYSTEM_DARK = ':root:not([data-theme="light"])'  # dark by system setting, unless light was picked
-_PICKED_DARK = ':root[data-theme="dark"]'
+_PICKED_DARK = ':root[data-theme="dark"]'  # light is the default; dark only when the viewer picks it
 
 
 def _dark(scope: str) -> str:
@@ -62,8 +61,7 @@ def _dark(scope: str) -> str:
             f"{scope} .theme-toggle .to-dark {{ display:none; }}\n")
 
 
-THEME_CSS = (f":root {{ color-scheme:light; {_LIGHT} }}\n"
-             f"@media (prefers-color-scheme: dark) {{\n{_dark(_SYSTEM_DARK)}}}\n{_dark(_PICKED_DARK)}")
+THEME_CSS = f":root {{ color-scheme:light; {_LIGHT} }}\n{_dark(_PICKED_DARK)}"
 
 CSS = THEME_CSS + """
 :root { --r:16px; --sans:ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Roboto,
@@ -268,7 +266,7 @@ def safe_next(value: str | None, default: str) -> str:
 
 def theme_toggle(action: str = f"{BASE}/theme") -> Any:
     """Two links, one per theme. The stylesheet shows the one that switches away from what
-    is on screen, so it works with the system setting and without JavaScript."""
+    is on screen, so it works without JavaScript."""
     here = quote(_here.get(), safe="/")
     return Span(
         A(NotStr(_MOON), href=f"{action}?mode=dark&next={here}", cls="to-dark", title="Dark mode",
@@ -284,8 +282,7 @@ def head(title: str) -> tuple[Any, ...]:
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Meta(name="referrer", content="no-referrer"),
-        Meta(name="theme-color", content="#fafaf7", media="(prefers-color-scheme: light)"),
-        Meta(name="theme-color", content="#0e0e10", media="(prefers-color-scheme: dark)"),
+        Meta(name="theme-color", content="#0e0e10" if _theme.get() == "dark" else "#fafaf7"),
         Script(src=HTMX_SRC, defer=True),
         Style(CSS),
     )

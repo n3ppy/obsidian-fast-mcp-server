@@ -229,7 +229,7 @@ def build_app(
     @app.get("/theme")
     def set_theme(req: Request, mode: str = "", next: str = "") -> Response:  # noqa: A002 - the query's name
         """Remember the viewer's light/dark choice in a site-wide cookie; any other mode
-        forgets it, so the system setting decides again."""
+        forgets it, back to light, the default."""
         response = RedirectResponse(safe_next(next, f"{BASE}/"), status_code=303)
         if mode in THEMES:
             response.set_cookie(THEME_COOKIE, mode, max_age=365 * 24 * 3600, path="/", samesite="lax", httponly=True,

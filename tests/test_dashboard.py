@@ -216,9 +216,10 @@ def test_theme_choice_is_remembered_site_wide(vault_env) -> None:
         async with Web(server) as web:
             await sign_in(web)
             page = (await web.get("/dash/activity?days=7")).text
-            # Until the viewer picks, the system setting decides; both switches are on the page
-            # (the stylesheet shows one), and each brings the viewer back to this page.
+            # Light until the viewer picks dark; both switches are on the page (the stylesheet
+            # shows one), and each brings the viewer back to this page.
             assert "data-theme" not in page.split("<head>", 1)[0]
+            assert "prefers-color-scheme: dark" not in page  # light is the default, whatever the system says
             assert 'href="/dash/theme?mode=dark&amp;next=/dash/activity%3Fdays%3D7"' in page
             assert 'href="/dash/theme?mode=light&amp;next=/dash/activity%3Fdays%3D7"' in page
             picked = await web.get("/dash/theme?mode=dark&next=/dash/activity%3Fdays%3D7")

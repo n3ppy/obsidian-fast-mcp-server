@@ -184,8 +184,8 @@ e.g. `Australia/Perth`, so days and times are yours).
   Claude's reads, whether Claude made the last change, and when; notes open on GitHub.
 - **Health:** sync per vault, recent sync errors, connected clients, tool speed, server info.
 
-It follows your system's light or dark setting; the sun/moon switch in the header picks one
-and remembers it (a `theme` cookie). No JavaScript is needed for the charts or the switch.
+It's light by default; the sun/moon switch in the header turns on dark mode and remembers
+it (a `theme` cookie). No JavaScript is needed for the charts or the switch.
 
 Sign-in uses the server's login method. With GitHub login it reuses the same OAuth App
 and allowlist (GitHub returns to the App's `/auth/callback`; the server sends dashboard sign-ins on
