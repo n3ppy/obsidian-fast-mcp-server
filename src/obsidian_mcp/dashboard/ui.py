@@ -16,8 +16,8 @@ from urllib.parse import quote
 from zoneinfo import ZoneInfo
 
 from fasthtml.common import (
-    A, Body, Button, Div, Form, H1, Head, Header, Html, Input, Main, Meta, Nav, NotStr, P, Script, Section, Span,
-    Style, Title, to_xml,
+    A, Body, Button, Details, Div, Form, H1, Head, Header, Html, Input, Main, Meta, Nav, NotStr, P, Script, Section,
+    Span, Style, Summary, Title, to_xml,
 )
 from starlette.requests import cookie_parser
 from starlette.responses import HTMLResponse
@@ -83,6 +83,30 @@ nav a.on { color:var(--fg); background:var(--soft); font-weight:600; }
 header .right { margin-left:auto; display:flex; align-items:center; gap:12px; }
 header form { margin:0; }
 .who { color:var(--muted); font-size:13px; }
+/* the account menu: the name opens a panel from the right (a <details>, no JavaScript) */
+.account > summary { list-style:none; display:flex; align-items:center; gap:8px; padding:4px 8px 4px 4px;
+  border-radius:999px; cursor:pointer; user-select:none; }
+.account > summary::-webkit-details-marker { display:none; }
+.account > summary:hover { background:var(--soft); } .account > summary:hover .who { color:var(--fg); }
+.avatar { display:grid; place-items:center; width:28px; height:28px; border-radius:50%; background:var(--accent-soft);
+  color:var(--accent); font-size:13px; font-weight:600; }
+.chev { width:14px; height:14px; fill:none; stroke:var(--muted); stroke-width:2; stroke-linecap:round;
+  stroke-linejoin:round; }
+.account[open] > summary::before { content:""; position:fixed; inset:0; z-index:20; cursor:default;
+  background:color-mix(in srgb, var(--fg) 22%, transparent); }
+.drawer { position:fixed; top:0; right:0; bottom:0; z-index:21; display:flex; flex-direction:column; gap:16px;
+  width:min(300px, 86vw); padding:20px 16px; background:var(--card); border-left:1px solid var(--line);
+  box-shadow:-20px 0 60px -30px rgba(14,14,16,.35); animation:slide-in .18s ease-out; }
+@keyframes slide-in { from { transform:translateX(24px); opacity:0; } }
+.drawer-head { padding:4px 12px 12px; border-bottom:1px solid var(--line); }
+.drawer-head .name { font-weight:600; overflow-wrap:anywhere; }
+.drawer-links { display:flex; flex-direction:column; gap:2px; }
+.drawer-links a, .drawer-links button.link { display:block; width:100%; padding:10px 12px; border:0;
+  border-radius:10px; background:none; color:var(--fg); font-size:15px; text-align:left; cursor:pointer; }
+.drawer-links a:hover, .drawer-links button.link:hover { background:var(--soft); text-decoration:none; }
+.drawer-links a.on { background:var(--soft); font-weight:600; }
+.drawer-links form { margin:8px 0 0; padding-top:8px; border-top:1px solid var(--line); }
+.drawer-links button.link { color:var(--muted); }
 .theme-toggle a { display:inline-flex; padding:5px; border-radius:8px; color:var(--muted); }
 .theme-toggle a:hover { color:var(--fg); background:var(--soft); }
 .theme-toggle .to-light { display:none; }
@@ -223,8 +247,17 @@ _SUN = ('<svg class="ic-theme" viewBox="0 0 24 24" aria-hidden="true"><circle cx
         '<path d="M12 2v2M12 20v2M4.93 4.93l1.41 1.41M17.66 17.66l1.41 1.41M2 12h2M20 12h2M4.93 19.07l1.41-1.41'
         'M17.66 6.34l1.41-1.41"/></svg>')
 
+_CHEVRON = ('<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>')
+
 _theme: ContextVar[str | None] = ContextVar("dash_theme", default=None)
 _here: ContextVar[str] = ContextVar("dash_here", default=f"{BASE}/")
+_base: ContextVar[str] = ContextVar("dash_base", default=BASE)
+
+
+def base() -> str:
+    """Where the dashboard is, for this request: ``/dash`` here, or wherever an embedding
+    app mounted it (its ``root_path``, e.g. ``/alice/dash``). Every link is built on it."""
+    return _base.get()
 
 
 class ThemeMiddleware:
@@ -243,12 +276,14 @@ class ThemeMiddleware:
         root, path = scope.get("root_path", ""), scope.get("path", "")
         here = path if path.startswith(root) else root + path
         query = scope.get("query_string", b"").decode("latin-1")
-        tokens = (_theme.set(theme if theme in THEMES else None), _here.set(here + (f"?{query}" if query else "")))
+        tokens = (_theme.set(theme if theme in THEMES else None), _here.set(here + (f"?{query}" if query else "")),
+                  _base.set(root.rstrip("/") or BASE))
         try:
             await self.app(scope, receive, send)
         finally:
             _theme.reset(tokens[0])
             _here.reset(tokens[1])
+            _base.reset(tokens[2])
 
 
 def theme_attrs() -> dict[str, str]:
@@ -264,9 +299,10 @@ def safe_next(value: str | None, default: str) -> str:
     return value
 
 
-def theme_toggle(action: str = f"{BASE}/theme") -> Any:
+def theme_toggle(action: str | None = None) -> Any:
     """Two links, one per theme. The stylesheet shows the one that switches away from what
     is on screen, so it works without JavaScript."""
+    action = action or f"{base()}/theme"
     here = quote(_here.get(), safe="/")
     return Span(
         A(NotStr(_MOON), href=f"{action}?mode=dark&next={here}", cls="to-dark", title="Dark mode",
@@ -277,42 +313,71 @@ def theme_toggle(action: str = f"{BASE}/theme") -> Any:
     )
 
 
-def head(title: str) -> tuple[Any, ...]:
+def head(title: str, extra_css: str = "") -> tuple[Any, ...]:
     return (
         Meta(charset="utf-8"),
         Meta(name="viewport", content="width=device-width, initial-scale=1"),
         Meta(name="referrer", content="no-referrer"),
         Meta(name="theme-color", content="#0e0e10" if _theme.get() == "dark" else "#fafaf7"),
         Script(src=HTMX_SRC, defer=True),
-        Style(CSS),
+        Style(CSS + extra_css),
     )
 
 
-def document(title: str, body: Any, status: int = 200) -> HTMLResponse:
+def document(title: str, body: Any, status: int = 200, extra_css: str = "") -> HTMLResponse:
     """A whole page, so the <html> tag can carry the viewer's theme."""
-    doc = Html(Head(Title(title), *head(title)), body, lang="en", **theme_attrs())
+    doc = Html(Head(Title(title), *head(title, extra_css)), body, lang="en", **theme_attrs())
     return HTMLResponse(to_xml(doc), status_code=status)  # Html() brings its own doctype
 
 
-NAV = [("Overview", ""), ("Activity", "/activity"), ("Insights", "/insights"), ("Wikis", "/wikis"), ("Health", "/health")]
+NAV = [("Overview", "/overview"), ("Activity", "/activity"), ("Insights", "/insights"), ("Wikis", "/wikis"),
+       ("Health", "/health")]
+
+
+def account_menu(user: str | None, items: tuple[tuple[str, str], ...], logout: Any, active: str = "") -> Any:
+    """The name at the top right; pressing it slides a panel in from the right with the
+    account's pages and Sign out. No JavaScript: a <details>, whose open summary also
+    becomes the dimmed backdrop, so a press anywhere outside the panel closes it."""
+    links = [A(label, href=href, cls="on" if label == active else None) for label, href in items]
+    initial = (user or "?").strip()[:1].upper() or "?"
+    return Details(
+        Summary(Span(initial, cls="avatar", aria_hidden="true"), Span(user or "Account", cls="who"),
+                NotStr(_CHEVRON), title="Account"),
+        Div(
+            Div(Span(user or "", cls="name"), cls="drawer-head"),
+            Div(*links, logout, cls="drawer-links"),
+            cls="drawer",
+        ),
+        cls="account",
+    )
 
 
 def page(
     title: str, active: str, user: str | None, csrf: str | None, *content: Any,
     brand: str = "Vault dashboard", extra_nav: tuple[tuple[str, str], ...] = (),
-    logout_action: str | None = None, masthead: Any = None,
+    logout_action: str | None = None, masthead: Any = None, menu: tuple[tuple[str, str], ...] = (),
+    extra_css: str = "", at: str | None = None,
 ) -> HTMLResponse:
-    links = [A(label, href=f"{BASE}{path}/" if not path else f"{BASE}{path}", cls="on" if label == active else None)
-             for label, path in NAV]
-    links += [A(label, href=href) for label, href in extra_nav]
-    logout = Form(
-        Input(type="hidden", name="csrf", value=csrf or ""),
-        Button("Sign out", cls="link"),
-        method="post", action=logout_action or f"{BASE}/logout",
-    )
-    top = Div(masthead, cls="brand") if masthead is not None else H1(brand)
-    right = Div(theme_toggle(), Span(user or "", cls="who"), logout, cls="right")
-    return document(f"{title} · {brand}", Body(Header(top, Nav(*links), right), Main(*content)))
+    """A dashboard page: the brand, the tabs, the theme switch and the account menu.
+    `menu` adds the embedding app's pages (Settings, ...) to the account menu; `at` is
+    where the dashboard is when the page isn't served by the dashboard itself."""
+    token = _base.set(at) if at else None
+    try:
+        here = base()
+        links = [A(label, href=f"{here}{path}", cls="on" if label == active else None) for label, path in NAV]
+        links += [A(label, href=href) for label, href in extra_nav]
+        logout = Form(
+            Input(type="hidden", name="csrf", value=csrf or ""),
+            Button("Sign out", cls="link"),
+            method="post", action=logout_action or f"{here}/logout",
+        )
+        top = Div(masthead, cls="brand") if masthead is not None else H1(brand)
+        right = Div(theme_toggle(), account_menu(user, menu, logout, active), cls="right")
+        return document(f"{title} · {brand}", Body(Header(top, Nav(*links), right), Main(*content)),
+                        extra_css=extra_css)
+    finally:
+        if token is not None:
+            _base.reset(token)
 
 
 def login_page(*content: Any, status_title: str = "Sign in", brand: str = "Vault dashboard") -> tuple[Any, ...]:

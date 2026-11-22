@@ -18,6 +18,10 @@ def _none() -> None:
     return None
 
 
+def _no_items() -> tuple[tuple[str, str], ...]:
+    return ()
+
+
 @dataclass(frozen=True)
 class ExternalAuth:
     user: Callable[[], str | None]  # label of the person signed in, or None
@@ -28,3 +32,4 @@ class ExternalAuth:
     nav: tuple[tuple[str, str], ...] = ()  # extra header links: (label, href)
     banner: Callable[[], Any] | None = None  # shown at the top of the Overview, or None
     masthead: Any = None  # shown instead of the brand name at the top left (a logo, a link home)
+    menu: Callable[[], tuple[tuple[str, str], ...]] = _no_items  # the account menu's pages: (label, href)

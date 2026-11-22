@@ -41,8 +41,8 @@ from ..vault import VaultError, configured_vaults
 from . import charts, stats
 from .external import ExternalAuth
 from .ui import (
-    BASE, THEME_COOKIE, THEMES, Fmt, ThemeMiddleware, bytes_label, empty, head, login_page, page, plural, safe_next,
-    theme_attrs, tool_label,
+    BASE, THEME_COOKIE, THEMES, Fmt, ThemeMiddleware, base, bytes_label, empty, head, login_page, page, plural,
+    safe_next, theme_attrs, tool_label,
 )
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
@@ -111,7 +111,8 @@ class _SecurityHeaders:
 
 def _rel(path: str) -> str:
     """The path inside the dashboard ("/dash/activity" -> "/activity")."""
-    return path[len(BASE):] if path.startswith(BASE) else path
+    root = base()
+    return path[len(root):] if path.startswith(root) else path
 
 
 def _zone(name: str, fallback: ZoneInfo) -> ZoneInfo:
@@ -194,7 +195,8 @@ def build_app(
     def shell(title: str, active: str, session, *content: Any) -> Any:
         if external is not None:
             return page(title, active, external.user(), external.csrf(), *content, brand=brand,
-                        extra_nav=external.nav, logout_action=external.logout_url, masthead=external.masthead)
+                        extra_nav=external.nav, logout_action=external.logout_url, masthead=external.masthead,
+                        menu=external.menu())
         return page(title, active, current_user(session), session.get("csrf"), *content)
 
     # -- sign in ---------------------------------------------------------------------
@@ -205,7 +207,7 @@ def build_app(
             body = [H1("Vault dashboard"), intro]
             if error:
                 body.append(P(error, cls="err-text"))
-            body.append(A("Sign in with GitHub", href=f"{BASE}/login/github", cls="primary"))
+            body.append(A("Sign in with GitHub", href=f"{base()}/login/github", cls="primary"))
         else:
             body = [
                 H1("Vault dashboard"), intro,
@@ -214,7 +216,7 @@ def build_app(
                     Input(type="password", name="password", placeholder="Password",
                           autocomplete="current-password", autofocus=True, required=True),
                     Button("Sign in", cls="primary"),
-                    method="post", action=f"{BASE}/login",
+                    method="post", action=f"{base()}/login",
                 ),
             ]
         return _html(login_page(*body), status)
@@ -230,7 +232,7 @@ def build_app(
     def set_theme(req: Request, mode: str = "", next: str = "") -> Response:  # noqa: A002 - the query's name
         """Remember the viewer's light/dark choice in a site-wide cookie; any other mode
         forgets it, back to light, the default."""
-        response = RedirectResponse(safe_next(next, f"{BASE}/"), status_code=303)
+        response = RedirectResponse(safe_next(next, f"{base()}/"), status_code=303)
         if mode in THEMES:
             response.set_cookie(THEME_COOKIE, mode, max_age=365 * 24 * 3600, path="/", samesite="lax", httponly=True,
                                 secure=req.url.scheme == "https")
@@ -241,7 +243,7 @@ def build_app(
     @app.get("/login")
     def login_get(session) -> Any:
         if current_user(session):
-            return RedirectResponse(f"{BASE}/", status_code=303)
+            return RedirectResponse(f"{base()}/", status_code=303)
         if external is not None:
             return RedirectResponse(external.login_url, status_code=303)
         return login_form()
@@ -256,7 +258,7 @@ def build_app(
         if not password_check.check_password(str(form.get("password", ""))):
             return login_form("Incorrect password.", 401)
         start_session(session, "owner")
-        return RedirectResponse(f"{BASE}/", status_code=303)
+        return RedirectResponse(f"{base()}/", status_code=303)
 
     @app.get("/login/github")
     def login_github(session) -> Any:
@@ -289,7 +291,7 @@ def build_app(
         if login.lower() not in settings.allowed_users:
             return login_form("This GitHub account isn't allowed on this server.", 403)
         start_session(session, login)
-        return RedirectResponse(f"{BASE}/", status_code=303)
+        return RedirectResponse(f"{base()}/", status_code=303)
 
     @app.post("/logout")
     async def logout(request: Request, session) -> Any:
@@ -300,7 +302,7 @@ def build_app(
         if not token or not secrets.compare_digest(str(form.get("csrf", "")), token):
             return Response("Invalid request", status_code=403)
         session.clear()
-        return RedirectResponse(f"{BASE}/login", status_code=303)
+        return RedirectResponse(f"{base()}/login", status_code=303)
 
     # -- pieces ----------------------------------------------------------------------
 
@@ -343,7 +345,7 @@ def build_app(
             if expandable and e.get("commit_sha"):
                 target = f"stat-{e['id']}"
                 extra = Div(
-                    Button("Show files", cls="link", hx_get=f"{BASE}/commit/{e['vault']}/{e['commit_sha']}",
+                    Button("Show files", cls="link", hx_get=f"{base()}/commit/{e['vault']}/{e['commit_sha']}",
                            hx_target=f"#{target}", hx_swap="innerHTML"),
                     Div(id=target),
                 )
@@ -403,6 +405,7 @@ def build_app(
     # -- pages -----------------------------------------------------------------------
 
     @app.get("/")
+    @app.get("/overview")
     def overview(session) -> Any:
         daily = stats.daily_activity(log, clock, 30)
         health = stats.sync_health(log)
@@ -429,9 +432,9 @@ def build_app(
                 cls="grid2",
             ),
             Section(H2("Recent activity", Small("refreshes every 30 s")),
-                    Div(recent_fragment(), hx_get=f"{BASE}/fragment/recent", hx_trigger="every 30s",
+                    Div(recent_fragment(), hx_get=f"{base()}/fragment/recent", hx_trigger="every 30s",
                         hx_swap="innerHTML"),
-                    P(A("All activity →", href=f"{BASE}/activity"), cls="small")),
+                    P(A("All activity →", href=f"{base()}/activity"), cls="small")),
             Section(H2("Errors", Small("last 7 days")), errors_table(errors)),
         )
 
@@ -445,7 +448,7 @@ def build_app(
         since = time.time() - days * 86400
         top_read = stats.top_read(log, since)
         top_changed = stats.top_changed(days)
-        switch = Div(*[A(f"{d} days", href=f"{BASE}/insights?days={d}", cls="on" if d == days else None)
+        switch = Div(*[A(f"{d} days", href=f"{base()}/insights?days={d}", cls="on" if d == days else None)
                        for d in (7, 30, 90)], cls="switch")
         read_table = Div(Table(
             Thead(Tr(Th("Note"), Th("Reads"), Th("Last read"))),
@@ -547,13 +550,13 @@ def build_app(
             Label(Input(type="checkbox", name="errors", value="1", checked=bool(errors)), " Errors only",
                   cls="small"),
             Button("Filter"),
-            method="get", action=f"{BASE}/activity", cls="filters",
+            method="get", action=f"{base()}/activity", cls="filters",
         )
         params = {k: v for k, v in dict(days=days, kind=kind, tool=tool, errors=errors, q=q).items() if v}
         pages = max((total + PAGE_SIZE - 1) // PAGE_SIZE, 1)
-        prev_link = A("← Newer", href=f"{BASE}/activity?{urlencode({**params, 'page_no': page_no - 1})}") \
+        prev_link = A("← Newer", href=f"{base()}/activity?{urlencode({**params, 'page_no': page_no - 1})}") \
             if page_no > 1 else Span("")
-        next_link = A("Older →", href=f"{BASE}/activity?{urlencode({**params, 'page_no': page_no + 1})}") \
+        next_link = A("Older →", href=f"{base()}/activity?{urlencode({**params, 'page_no': page_no + 1})}") \
             if page_no < pages else Span("")
         return shell(
             "Activity", "Activity", session,
@@ -578,7 +581,7 @@ def build_app(
 
     @app.get("/notes")
     def notes_moved(session) -> Any:
-        return RedirectResponse(f"{BASE}/insights", status_code=301)
+        return RedirectResponse(f"{base()}/insights", status_code=301)
 
     # -- wikis: the vault as a file tree ---------------------------------------------
 
@@ -614,7 +617,7 @@ def build_app(
                 query = urlencode({"path": d["path"]})
                 items.append(Li(Details(
                     summary, Ul(Li("Loading…", cls="muted small f")),
-                    hx_get=f"{BASE}/wikis/dir/{ctx['vault']}?{query}", hx_trigger="toggle once",
+                    hx_get=f"{base()}/wikis/dir/{ctx['vault']}?{query}", hx_trigger="toggle once",
                     hx_target="find ul", hx_swap="innerHTML",
                 )))
             else:
@@ -642,7 +645,7 @@ def build_app(
         total = sum(stats.tree(v)["count"] for v in vaults.values())
         search = Input(
             type="search", name="q", placeholder="Filter files…", aria_label="Filter files", autocomplete="off",
-            hx_get=f"{BASE}/wikis/search", hx_trigger="input changed delay:250ms, search",
+            hx_get=f"{base()}/wikis/search", hx_trigger="input changed delay:250ms, search",
             hx_target="#tree", hx_swap="innerHTML", cls="filter",
         )
         legend = P("Click a note to open it on GitHub. ", Span("Claude", cls="badge ai"),

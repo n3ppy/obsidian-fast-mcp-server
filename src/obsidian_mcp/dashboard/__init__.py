@@ -95,3 +95,6 @@ def install(
         return RedirectResponse(f"{BASE}/", status_code=307)
 
     routes.append(Mount(BASE, app=app))
+    # An embedding app can also serve the dashboard somewhere else, per person (e.g.
+    # /alice/dash): it calls this app with that root_path, and every link follows it.
+    server.dashboard_app = app

@@ -279,7 +279,7 @@ class Embed:
             _viewer.reset(token)
 
 
-def hosted_dashboard(world: dict[str, Any]) -> Any:
+def hosted_dashboard(world: dict[str, Any], menu: Any = None) -> Any:
     from fasthtml.common import Div
 
     from obsidian_mcp.github_auth import StaticTokenVerifier
@@ -289,6 +289,7 @@ def hosted_dashboard(world: dict[str, Any]) -> Any:
     external = ExternalAuth(
         user=_viewer.get, login_url="/login", logout_url="/logout", csrf=lambda: "csrf-token",
         brand="Kintex", nav=(("Settings", "/settings"),), banner=lambda: Div("Finish setting up", id="setup"),
+        menu=menu or (lambda: ()),
     )
     # Any provider will do: the embedding app brings its own (the gateway uses AuthKit).
     return build_server(settings, workspaces=lambda token: None, dashboard_auth=external,
@@ -322,6 +323,36 @@ def test_hosted_dashboard_trusts_the_embedding_apps_sign_in(world) -> None:
     assert login.status_code == 303 and login.headers["location"] == "/login"
     assert logout.status_code == 404  # the embedding app signs people out
     assert "set-cookie" not in page.headers  # no session of the dashboard's own
+
+
+def test_an_embedding_app_can_serve_the_dashboard_at_its_own_path(world) -> None:
+    """E.g. /alice/dash: the app calls the dashboard with that root_path, and the tabs, the
+    live fragments, the theme switch and the account menu all follow it."""
+    async def go() -> list[httpx2.Response]:
+        server = hosted_dashboard(world, menu=lambda: (("Settings", "/alice/dash/settings"),))
+        app = server.http_app(path="/mcp", stateless_http=True)
+        dash = Embed(server.dashboard_app, world["spaces"])
+
+        async def at_alice(scope: Any, receive: Any, send: Any) -> None:
+            if scope["type"] == "http" and scope["path"].startswith("/alice/dash"):
+                await dash(dict(scope, root_path="/alice/dash"), receive, send)
+            else:
+                await app(scope, receive, send)
+
+        async with app.router.lifespan_context(app):
+            transport = httpx2.ASGITransport(app=at_alice)
+            async with httpx2.AsyncClient(transport=transport, base_url=BASE_URL) as web:
+                alice = {"x-test-user": "alice"}
+                return [await web.get(p, headers=alice) for p in ("/alice/dash/overview", "/alice/dash/activity")]
+
+    overview, activity = run(go())
+    assert overview.status_code == 200 and activity.status_code == 200
+    assert 'href="/alice/dash/activity"' in overview.text and 'href="/alice/dash/overview"' in activity.text
+    assert 'hx-get="/alice/dash/fragment/recent"' in overview.text
+    assert "/alice/dash/theme?mode=dark&amp;next=/alice/dash/overview" in overview.text
+    assert 'class="account"' in overview.text and 'href="/alice/dash/settings"' in overview.text
+    assert 'action="/logout"' in overview.text  # Sign out, in the account menu
+    assert '"/dash/' not in overview.text and '"/dash/' not in activity.text
 
 
 def test_hosted_dashboard_shows_only_the_viewers_workspace(world) -> None:

@@ -352,7 +352,7 @@ def test_pages_show_activity_sync_and_vault(vault_env) -> None:
             overview = (await web.get("/dash/")).text
             assert 'class="strip ok"' in overview and "no errors" in overview
             assert "Claude read today" in overview and "Note not found" in overview
-            assert overview.count("<svg") == 2
+            assert overview.count("<svg") == 3  # the theme switch (2) and the account menu: no chart images
             assert "Most read by Claude" not in overview
 
             insights = (await web.get("/dash/insights")).text
