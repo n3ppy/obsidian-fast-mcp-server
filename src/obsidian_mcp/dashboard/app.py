@@ -451,12 +451,12 @@ def build_app(
         switch = Div(*[A(f"{d} days", href=f"{base()}/insights?days={d}", cls="on" if d == days else None)
                        for d in (7, 30, 90)], cls="switch")
         read_table = Div(Table(
-            Thead(Tr(Th("Note"), Th("Reads"), Th("Last read"))),
+            Thead(Tr(Th("Note"), Th("Reads", cls="num"), Th("Last read"))),
             Tbody(*[Tr(path_cell(r["vault"], r["path"]), Td(str(r["n"]), cls="num"),
                        Td(fmt.short(r["last_ts"]), cls="when")) for r in top_read]),
         ), cls="scroll") if top_read else empty("No notes read by Claude in this period.")
         changed_table = Div(Table(
-            Thead(Tr(Th("File"), Th("Commits"), Th("By Claude"), Th("From devices"))),
+            Thead(Tr(Th("File"), Th("Commits", cls="num"), Th("By Claude", cls="num"), Th("From devices", cls="num"))),
             Tbody(*[Tr(path_cell(r["vault"], r["path"]), Td(str(r["n"]), cls="num"),
                        Td(str(r["claude"]), cls="num"), Td(str(r["device"]), cls="num")) for r in top_changed]),
         ), cls="scroll") if top_changed else empty("No commits in this period.")
@@ -516,7 +516,7 @@ def build_app(
         if not errors:
             return empty("No errors. ")
         return Div(Table(
-            Thead(Tr(Th("Type"), Th("Count"), Th("Last"), Th("Last message"))),
+            Thead(Tr(Th("Type"), Th("Count", cls="num"), Th("Last"), Th("Last message"))),
             Tbody(*[Tr(Td(e["type"]), Td(str(e["count"]), cls="num"),
                        Td(f"{fmt.short(e['last_ts'])} · {tool_label(e['last_tool'])}", cls="when"),
                        Td(e["last_error"] or "", cls="path small")) for e in errors]),
@@ -715,7 +715,7 @@ def build_app(
             return Span(label[1], cls=f"badge {label[0]}")
 
         sync_table = Div(Table(
-            Thead(Tr(Th("Vault"), Th("State"), Th("Last pull"), Th("Last push"), Th("Not pushed"), Th("Not pulled"))),
+            Thead(Tr(Th("Vault"), Th("State"), Th("Last pull"), Th("Last push"), Th("Not pushed", cls="num"), Th("Not pulled", cls="num"))),
             Tbody(*[Tr(Td(h["vault"]), Td(sync_state(h)), Td(fmt.short(h["last_pull"]), cls="when"),
                        Td(fmt.short(h["last_push"]), cls="when"), Td(str(h["ahead"]), cls="num"),
                        Td(str(h["behind"]), cls="num")) for h in sync_rows]),
@@ -734,7 +734,7 @@ def build_app(
         ), cls="scroll") if recent_errors else empty("No sync errors recorded.")
 
         clients_table = Div(Table(
-            Thead(Tr(Th("Client"), Th("Signed in as"), Th("Calls"), Th("First seen"), Th("Last seen"))),
+            Thead(Tr(Th("Client"), Th("Signed in as"), Th("Calls", cls="num"), Th("First seen"), Th("Last seen"))),
             Tbody(*[Tr(Td(names.get(r["client_id"]) or _client_label(r["client_id"]),
                           Div(Code(r["client_id"][:24]), cls="muted")),
                        Td(r["user"] or "—"), Td(str(r["n"]), cls="num"),
@@ -744,7 +744,7 @@ def build_app(
 
         lat = stats.latency(log, week)
         latency_table = Div(Table(
-            Thead(Tr(Th("Tool"), Th("Calls"), Th("Median"), Th("95th pct"), Th("Slowest"))),
+            Thead(Tr(Th("Tool"), Th("Calls", cls="num"), Th("Median", cls="num"), Th("95th pct", cls="num"), Th("Slowest", cls="num"))),
             Tbody(*[Tr(Td(tool_label(r["tool"])), Td(str(r["count"]), cls="num"),
                        Td(f"{r['median']} ms", cls="num"), Td(f"{r['p95']} ms", cls="num"),
                        Td(f"{r['max']} ms", cls="num")) for r in lat]),

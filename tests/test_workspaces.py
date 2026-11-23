@@ -328,8 +328,11 @@ def test_hosted_dashboard_trusts_the_embedding_apps_sign_in(world) -> None:
 def test_an_embedding_app_can_serve_the_dashboard_at_its_own_path(world) -> None:
     """E.g. /alice/dash: the app calls the dashboard with that root_path, and the tabs, the
     live fragments, the theme switch and the account menu all follow it."""
+    from fasthtml.common import Span
+
     async def go() -> list[httpx2.Response]:
-        server = hosted_dashboard(world, menu=lambda: (("Settings", "/alice/dash/settings"),))
+        menu = (("Setup", "/alice/dash/setup", Span("2/3", cls="badge ok")), ("Settings", "/alice/dash/settings"))
+        server = hosted_dashboard(world, menu=lambda: menu)
         app = server.http_app(path="/mcp", stateless_http=True)
         dash = Embed(server.dashboard_app, world["spaces"])
 
@@ -352,6 +355,7 @@ def test_an_embedding_app_can_serve_the_dashboard_at_its_own_path(world) -> None
     assert "/alice/dash/theme?mode=dark&amp;next=/alice/dash/overview" in overview.text
     assert 'class="account"' in overview.text and 'href="/alice/dash/settings"' in overview.text
     assert 'action="/logout"' in overview.text  # Sign out, in the account menu
+    assert 'href="/alice/dash/setup">Setup<span class="badge ok">2/3</span></a>' in overview.text  # a badge
     assert '"/dash/' not in overview.text and '"/dash/' not in activity.text
 
 

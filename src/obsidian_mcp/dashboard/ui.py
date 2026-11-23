@@ -105,6 +105,7 @@ header form { margin:0; }
   border-radius:10px; background:none; color:var(--fg); font-size:15px; text-align:left; cursor:pointer; }
 .drawer-links a:hover, .drawer-links button.link:hover { background:var(--soft); text-decoration:none; }
 .drawer-links a.on { background:var(--soft); font-weight:600; }
+.drawer-links a .badge { float:right; margin-top:1px; font-variant-numeric:tabular-nums; }
 .drawer-links form { margin:8px 0 0; padding-top:8px; border-top:1px solid var(--line); }
 .drawer-links button.link { color:var(--muted); }
 .theme-toggle a { display:inline-flex; padding:5px; border-radius:8px; color:var(--muted); }
@@ -135,9 +136,9 @@ table { width:100%; border-collapse:collapse; font-size:14px; }
 th { padding:8px; border-bottom:1px solid var(--line); text-align:left; white-space:nowrap; font-size:11px;
   font-weight:600; letter-spacing:.12em; text-transform:uppercase; color:var(--muted); }
 td { padding:9px 8px; border-bottom:1px solid var(--line); vertical-align:top; }
-tr:last-child td { border-bottom:0; }
+tr:last-child td, tbody tr:last-child th { border-bottom:0; }
 td.path { font-family:var(--mono); font-size:13px; overflow-wrap:anywhere; }
-td.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }
+td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }  /* numbers line up under their heading */
 td.when { white-space:nowrap; color:var(--muted); }
 .badge { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
 .badge.ok { background:var(--ok-bg); color:var(--ok); } .badge.err { background:var(--err-bg); color:var(--err); }
@@ -334,11 +335,14 @@ NAV = [("Overview", "/overview"), ("Activity", "/activity"), ("Insights", "/insi
        ("Health", "/health")]
 
 
-def account_menu(user: str | None, items: tuple[tuple[str, str], ...], logout: Any, active: str = "") -> Any:
+def account_menu(user: str | None, items: tuple[tuple[Any, ...], ...], logout: Any, active: str = "") -> Any:
     """The name at the top right; pressing it slides a panel in from the right with the
     account's pages and Sign out. No JavaScript: a <details>, whose open summary also
-    becomes the dimmed backdrop, so a press anywhere outside the panel closes it."""
-    links = [A(label, href=href, cls="on" if label == active else None) for label, href in items]
+    becomes the dimmed backdrop, so a press anywhere outside the panel closes it.
+
+    Each item is (label, href), or (label, href, badge): the badge shows at the right of
+    the link, for example `Span("2/3", cls="badge ok")`."""
+    links = [A(label, *badge, href=href, cls="on" if label == active else None) for label, href, *badge in items]
     initial = (user or "?").strip()[:1].upper() or "?"
     return Details(
         Summary(Span(initial, cls="avatar", aria_hidden="true"), Span(user or "Account", cls="who"),
@@ -355,7 +359,7 @@ def account_menu(user: str | None, items: tuple[tuple[str, str], ...], logout: A
 def page(
     title: str, active: str, user: str | None, csrf: str | None, *content: Any,
     brand: str = "Vault dashboard", extra_nav: tuple[tuple[str, str], ...] = (),
-    logout_action: str | None = None, masthead: Any = None, menu: tuple[tuple[str, str], ...] = (),
+    logout_action: str | None = None, masthead: Any = None, menu: tuple[tuple[Any, ...], ...] = (),
     extra_css: str = "", at: str | None = None,
 ) -> HTMLResponse:
     """A dashboard page: the brand, the tabs, the theme switch and the account menu.
