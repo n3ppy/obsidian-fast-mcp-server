@@ -19,7 +19,7 @@ the Claude iPhone/iPad/Android apps through a self-hosted server.
   server pulls before working and commits + pushes after every write.
 - **PDFs** — extract text from any PDF inside the vault, with optional page ranges.
 - **Dashboard** (optional) — a web page showing what Claude read and changed, sync
-  health and vault stats.
+  health and vault stats, and every note rendered for reading, as in Obsidian.
 
 Every path is resolved relative to the vault root and checked so it cannot escape it.
 
@@ -181,11 +181,39 @@ e.g. `Australia/Perth`, so days and times are yours).
 - **Insights:** most-read and most-changed files (7, 30 or 90 days), vault size and
   growth, and link health (orphans, broken links, untagged notes).
 - **Wikis:** the vault as a file tree like Obsidian's, with a filter box. Each file shows
-  Claude's reads, whether Claude made the last change, and when; notes open on GitHub.
+  Claude's reads, whether Claude made the last change, and when. A note opens in the
+  dashboard, rendered (below); when the vault is on GitHub, a GitHub mark at the right of
+  each file (on hover) opens it there.
 - **Health:** sync per vault, recent sync errors, connected clients, tool speed, server info.
 
 It's light by default; the sun/moon switch in the header turns on dark mode and remembers
 it (a `theme` cookie). No JavaScript is needed for the charts or the switch.
+
+### Reading a note
+
+`/dash/wikis/note/<vault>?path=Folder/Note.md` shows a note read-only (you still edit in
+Obsidian), rendered on the server by `render/`: CommonMark exactly (markdown-it-py) plus
+Obsidian's own syntax.
+
+- `[[links]]` (with `#Heading`, `#^block` and `|alias`) resolve the way backlinks do;
+  missing notes are dimmed. Tags open a page of the notes that have them, and a
+  "Linked from" list ends the page.
+- `![[embeds]]`: images with `|300` sizes, and notes, sections and blocks shown inline (three
+  deep at most, never in a loop).
+- Callouts (all types and aliases, nesting, folding), `==highlights==`, `%%comments%%`
+  (never shown), tasks with custom states, footnotes, tables, properties as a small header,
+  and the vault's "Strict line breaks" setting (from `.obsidian/app.json`).
+- Code coloured by Pygments; math typeset by KaTeX and `mermaid` diagrams drawn by Pele
+  (Obsidian's own renderer since 1.15), in the browser, loaded only on notes that need them.
+  Plugin blocks such as `dataview` are shown, never run.
+- Safe with any note: nh3 keeps only listed HTML, the page's Content-Security-Policy allows
+  scripts only from the server itself (pinned copies, `dashboard/static/vendor/`), remote
+  images become links (no tracking pixels), and files are served only from inside the vault,
+  never from dot folders. Images show inline; other files download.
+- Notes over 1 MB are shown as plain text, and code blocks over 200 KB aren't coloured.
+
+Obsidian's 181-note help vault renders without an error, in 7 ms a note typically (35 ms at
+the 95th percentile) on one core.
 
 Sign-in uses the server's login method. With GitHub login it reuses the same OAuth App
 and allowlist (GitHub returns to the App's `/auth/callback`; the server sends dashboard sign-ins on
@@ -368,6 +396,10 @@ OAuth flow claude.ai uses, against a local Git remote standing in for GitHub.
 `tests/test_tools_unchanged.py` fails if a tool's definition changes by accident, and
 `tests/test_dashboard.py` covers the activity log, dashboard sign-in and pages.
 `tests/test_workspaces.py` covers embedding: users can't see each other's vaults.
+`tests/test_render.py` covers the note renderer: every feature, the limits and the attack
+lines in `tests/render/fixture.md`, compared with `tests/render/fixture.html` (rebuild it
+after a deliberate change with `RENDER_GOLDEN=1 pytest tests/test_render.py`, and read the
+diff). `tests/test_viewer.py` covers the viewer's pages, files and path checks.
 
 ## Layout
 
@@ -386,7 +418,9 @@ src/obsidian_mcp/
   activity.py    activity log: one row per tool call (SQLite)
   gitstats.py    read-only views of the vault's git history
   workspace.py   embedding: one workspace (vaults, log, time zone) per caller
-  dashboard/     the /dash web app (FastHTML): sign-in, pages, stats, SVG charts
+  dashboard/     the /dash web app (FastHTML): sign-in, pages, stats, SVG charts, the note
+                 viewer (viewer.py) and its static files (static/: note.js, note.css, KaTeX, Pele)
+  render/        notes as web pages: Obsidian Flavored Markdown to safe HTML
 ```
 
 ## Changes from upstream
@@ -406,7 +440,8 @@ Forked from [Axel687/mcp_obsiCC_IOS](https://github.com/Axel687/mcp_obsiCC_IOS) 
 - Docker Compose publishes Caddy on one address (`MCP_BIND_IP`) and sets memory limits.
 - Moved from the MCP SDK's `MCPServer` to [FastMCP](https://gofastmcp.com) 4, and added
   "Sign in with GitHub" as an alternative to the password. Requires Python 3.11.
-- Added an activity log and an optional web dashboard (`/dash`).
+- Added an activity log and an optional web dashboard (`/dash`), which renders notes for
+  reading.
 - Can be embedded by an app serving many users (workspaces, per-vault git credentials
   and locks), and handles a first push to an empty repository.
 

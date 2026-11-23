@@ -22,23 +22,24 @@ import secrets
 import time
 from collections.abc import Awaitable, Callable
 from typing import Any
-from urllib.parse import urlencode
+from urllib.parse import quote, urlencode
 from zoneinfo import ZoneInfo
 
 import httpx2 as httpx
 from fasthtml.common import (
-    A, B, Beforeware, Body, Button, Code, Details, Div, FastHTML, Form, H1, H2, Head, Html, Input,
-    Label, Li, NotStr, Option, P, Section, Select, Small, Span, Summary, Table, Tbody, Td, Th, Thead,
+    A, Article, B, Beforeware, Body, Button, Code, Details, Div, FastHTML, Form, H1, H2, Head, Html, Input,
+    Label, Li, Link, NotStr, Option, P, Script, Section, Select, Small, Span, Summary, Table, Tbody, Td, Th, Thead,
     Tr, Ul, to_xml,
 )
 from starlette.requests import Request
-from starlette.responses import HTMLResponse, RedirectResponse, Response
+from starlette.responses import FileResponse, HTMLResponse, RedirectResponse, Response
 
-from .. import __version__, gitstats, workspace
+from .. import __version__, gitstats, links, workspace
 from ..activity import ActivityLog, ScopedLog
 from ..config import Settings
-from ..vault import VaultError, configured_vaults
-from . import charts, stats
+from ..render import render_note
+from ..vault import VaultError, configured_vaults, use_vault
+from . import assets, charts, stats, viewer
 from .external import ExternalAuth
 from .ui import (
     BASE, THEME_COOKIE, THEMES, Fmt, ThemeMiddleware, base, bytes_label, empty, head, login_page, page, plural,
@@ -55,10 +56,15 @@ COOKIE = "obsidian_dash"
 PAGE_SIZE = 50
 PUBLIC_PATHS = ("/login", "/login/github", "/callback")
 
+# Scripts: htmx from its CDN, and the note viewer's own (assets.py: note.js, KaTeX, Pele),
+# never inline ones. Fonts: KaTeX's, from this site. Images: this site and data: URIs only,
+# so a note can't load another site's image (no tracking pixels).
 CSP = (
-    "default-src 'none'; script-src https://cdn.jsdelivr.net; style-src 'unsafe-inline'; "
-    "img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; base-uri 'none'"
+    "default-src 'none'; script-src 'self' https://cdn.jsdelivr.net; style-src 'self' 'unsafe-inline'; "
+    "font-src 'self'; img-src 'self' data:; connect-src 'self'; form-action 'self'; frame-ancestors 'none'; "
+    "base-uri 'none'"
 )
+STATIC_CACHE = b"public, max-age=31536000, immutable"  # static/<digest>/...: a new digest for any change
 
 ClientNames = Callable[[str], Awaitable[str | None]]
 
@@ -83,7 +89,8 @@ async def github_login(code: str, redirect_uri: str, client_id: str, client_secr
 
 
 class _SecurityHeaders:
-    """ASGI middleware: no caching, no framing, strict CSP on every dashboard response."""
+    """ASGI middleware: no caching (except the static files, whose addresses change with
+    their content), no framing, strict CSP on every dashboard response."""
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -93,11 +100,14 @@ class _SecurityHeaders:
             await self.app(scope, receive, send)
             return
 
+        root, path = scope.get("root_path", ""), scope.get("path", "")
+        static = (path[len(root):] if root and path.startswith(root) else path).startswith("/static/")
+
         async def wrapped(message: dict) -> None:
             if message["type"] == "http.response.start":
                 headers = list(message.get("headers", []))
                 headers += [
-                    (b"cache-control", b"no-store"),
+                    (b"cache-control", STATIC_CACHE if static and message.get("status") == 200 else b"no-store"),
                     (b"x-frame-options", b"DENY"),
                     (b"x-content-type-options", b"nosniff"),
                     (b"referrer-policy", b"no-referrer"),
@@ -306,11 +316,35 @@ def build_app(
 
     # -- pieces ----------------------------------------------------------------------
 
+    # -- where things open ------------------------------------------------------------
+
+    def query(**params: str) -> str:
+        return urlencode(params, quote_via=quote, safe="/")  # folders stay readable: ?path=Inbox/Note.md
+
+    def note_url(vault: str, path: str) -> str:
+        return f"{base()}/wikis/note/{quote(vault, safe='')}?{query(path=path)}"
+
+    def file_url(vault: str, path: str) -> str:
+        return f"{base()}/wikis/file/{quote(vault, safe='')}?{query(path=path)}"
+
+    def open_url(vault: str, name: str, src: str | None = None) -> str:
+        return f"{base()}/wikis/open/{quote(vault, safe='')}?" + (query(name=name, src=src) if src else query(name=name))
+
+    def tag_url(vault: str, tag: str) -> str:
+        return f"{base()}/wikis/tag/{quote(vault, safe='')}?{query(tag=tag)}"
+
+    def asset(name: str) -> str:
+        return f"{base()}/static/{assets.digest()}/{name}"
+
     def path_link(vault: str | None, path: str | None) -> Any:
+        """A note in a table: it opens in the viewer (a PDF opens the file itself)."""
         if not path:
             return Span("—", cls="muted")
-        url = gitstats.file_url(vault, path) if vault and path.endswith((".md", ".pdf")) else None
-        return A(path, href=url, target="_blank", rel="noopener") if url else path
+        if vault and path.lower().endswith(".md"):
+            return A(path, href=note_url(vault, path))
+        if vault and path.lower().endswith(".pdf"):
+            return A(path, href=file_url(vault, path))
+        return path
 
     def path_cell(vault: str | None, path: str | None) -> Any:
         return Td(path_link(vault, path), cls="path")
@@ -587,17 +621,26 @@ def build_app(
 
     def wiki_context(name: str) -> dict[str, Any]:
         return {"vault": name, "changes": _safe(lambda: gitstats.last_changes(name), {}),
-                "reads": stats.read_counts(log, time.time() - 30 * 86400)}
+                "reads": stats.read_counts(log, time.time() - 30 * 86400),
+                "github": gitstats.web_url(name) is not None}
 
     def file_item(ctx: dict[str, Any], f: dict[str, Any], show_dir: bool = False) -> Any:
+        """A file in the tree. A note opens in the viewer; an image or another file opens
+        the file itself. With a GitHub remote, a GitHub button shows at the far right on
+        hover (always, on touch screens)."""
         vault = ctx["vault"]
         name = f["name"][:-3] if f["kind"] == "note" else f["name"]
         label = [icon(f["kind"]), Span(name, cls="nm")]
         if show_dir and "/" in f["path"]:
             label.append(Span(f["path"].rsplit("/", 1)[0], cls="dir"))
-        url = gitstats.file_url(vault, f["path"])
-        link = A(*label, href=url, target="_blank", rel="noopener", cls="file", title=f["path"]) if url \
-            else Span(*label, cls="file", title=f["path"])
+        if f["kind"] == "note":
+            link = A(*label, href=note_url(vault, f["path"]), cls="file", title=f["path"])
+        else:
+            link = A(*label, href=file_url(vault, f["path"]), cls="file", title=f["path"], target="_blank",
+                     rel="noopener")
+        github = gitstats.file_url(vault, f["path"]) if ctx["github"] else None
+        gh = A(NotStr(GITHUB_MARK), href=github, cls="gh", target="_blank", rel="noopener", title="Open on GitHub",
+               aria_label=f"Open {name} on GitHub") if github else ""
         meta = []
         reads = ctx["reads"].get((vault, f["path"]))
         if reads:
@@ -607,7 +650,7 @@ def build_app(
             if change[1]:
                 meta.append(Span("Claude", cls="badge ai", title="Claude made the last change"))
             meta.append(Span(fmt.ago(change[0]).replace(" ago", ""), title=f"Last changed {fmt.when(change[0])}"))
-        return Li(link, Span(*meta, cls="meta"), cls="f")
+        return Li(link, Span(*meta, cls="meta"), gh, cls="f")
 
     def dir_items(ctx: dict[str, Any], node: dict[str, Any], lazy: bool, depth: int = 0) -> list[Any]:
         items = []
@@ -648,8 +691,10 @@ def build_app(
             hx_get=f"{base()}/wikis/search", hx_trigger="input changed delay:250ms, search",
             hx_target="#tree", hx_swap="innerHTML", cls="filter",
         )
-        legend = P("Click a note to open it on GitHub. ", Span("Claude", cls="badge ai"),
-                   " marks notes Claude changed last; read counts cover the last 30 days.",
+        on_github = any(gitstats.web_url(name) for name in vaults)
+        legend = P("Click a note to read it" + (", or the GitHub mark beside it to open it on GitHub. " if on_github
+                                                else ". "),
+                   Span("Claude", cls="badge ai"), " marks notes Claude changed last; read counts cover the last 30 days.",
                    cls="muted small")
         return shell(
             "Wikis", "Wikis", session,
@@ -687,6 +732,145 @@ def build_app(
         shown = sum(1 for r in results if "f" in (r.attrs.get("class") or "").split())
         more = P(f"Showing {shown} of {total}.", cls="muted small") if total > shown else ""
         return Ul(*results, cls="results"), more
+
+    # -- the note viewer: a note, rendered (render/), read-only ------------------------------
+
+    def wiki_page(title: str, session, *content: Any, status: int = 200) -> Any:
+        response = shell(title, "Wikis", session, Link(rel="stylesheet", href=asset("note.css")), *content)
+        response.status_code = status
+        return response
+
+    def gone(session, heading: str, text: str, status: int = 404) -> Any:
+        return wiki_page(heading, session, Section(
+            Div(Div(A("Wikis", href=f"{base()}/wikis"), cls="crumbs"), cls="note-top"),
+            Div(H1(heading, cls="note-title"), P(text, cls="muted"), cls="note-head"),
+            cls="note-page"), status=status)
+
+    def crumbs(vault: str, path: str) -> Any:
+        parts: list[Any] = [A("Wikis", href=f"{base()}/wikis")]
+        if len(_vaults()) > 1:
+            parts += [Span("/", cls="sep"), Span(vault)]
+        for folder in path.split("/")[:-1]:
+            parts += [Span("/", cls="sep"), Span(folder)]
+        return Div(*parts, cls="crumbs")
+
+    def vault_context(vault: str, index: Any) -> Any:
+        found = _vaults()[vault]
+        return viewer.context(
+            index, viewer.Files(stats.tree(found)), own_prefix=f"{base()}/",
+            note_url=lambda p: note_url(vault, p), file_url=lambda p: file_url(vault, p),
+            open_url=lambda n: open_url(vault, n), tag_url=lambda t: tag_url(vault, t),
+        )
+
+    @app.get("/wikis/note/{vault}")
+    def wiki_note(session, vault: str, path: str = "") -> Any:
+        if vault not in _vaults():
+            return gone(session, "Note not found", "There's no such vault here.")
+        with use_vault(vault):
+            located = viewer.locate(path) if path.lower().endswith(".md") else None
+            if located is None:
+                return gone(session, "Note not found",
+                            "It may have been moved or deleted. Notes change on every device, so try Wikis.")
+            rel, target = located
+            try:
+                text = target.read_text(encoding="utf-8", errors="replace")
+            except OSError:
+                return gone(session, "Note not found", "This note can't be read right now.")
+            index = links.VaultIndex()
+            ctx = vault_context(vault, index)
+            note = render_note(text, rel, ctx, strict_breaks=viewer.strict_line_breaks())
+            linked = viewer.backlinks(index, rel)
+        github = gitstats.file_url(vault, rel)
+        change = _safe(lambda: gitstats.last_changes(vault), {}).get(rel)
+        meta: list[Any] = []
+        if change:
+            meta.append(Span(f"Changed {fmt.ago(change[0])}", title=fmt.when(change[0])))
+            if change[1]:
+                meta.append(Span("by Claude", cls="by-claude"))
+        reads = stats.read_counts(log, time.time() - 30 * 86400).get((vault, rel))
+        if reads:
+            meta.append(Span(f"{plural(reads, 'read')} by Claude in 30 days"))
+        actions = A(NotStr(GITHUB_MARK), "GitHub", href=github, cls="btn-gh", target="_blank", rel="noopener",
+                    title="Open on GitHub") if github else ""
+        page = [
+            Section(
+                Div(crumbs(vault, rel), Div(actions, cls="note-actions"), cls="note-top"),
+                Div(H1(note.title, cls="note-title"), Div(*meta, cls="note-meta") if meta else "", cls="note-head"),
+                NotStr(note.properties) if note.properties else "",
+                P("This note is over 1 MB, so it's shown as plain text.", cls="muted small big-note")
+                if note.plain else "",
+                # note.js reads these: where its files are, and how a diagram opens a note by name.
+                Article(NotStr(note.html), cls="note", data_note="1", data_assets=f"{base()}/static/{assets.digest()}/",
+                        data_open=f"{base()}/wikis/open/{quote(vault, safe='')}?{query(src=rel)}&name="),
+                cls="note-page",
+            ),
+        ]
+        if linked:
+            items = [Li(A(p.rsplit("/", 1)[-1][:-3], href=note_url(vault, p)),
+                        Span(p.rsplit("/", 1)[0], cls="dir") if "/" in p else "") for p in linked]
+            page.append(Section(Div(H2("Linked from", Small(plural(len(linked), "note"))), Ul(*items),
+                                    cls="linked")))
+        page.append(Script(src=asset("note.js"), defer=True))
+        return wiki_page(note.title, session, *page)
+
+    @app.get("/wikis/file/{vault}")
+    def wiki_file(session, vault: str, path: str = "") -> Any:
+        """A file from the vault: an image is shown, anything else downloads."""
+        if vault not in _vaults():
+            return Response("Not found", status_code=404)
+        with use_vault(vault):
+            located = viewer.locate(path)
+        if located is None:
+            return Response("Not found", status_code=404)
+        rel, target = located
+        kind = viewer.INLINE_TYPES.get(rel.rsplit(".", 1)[-1].lower() if "." in rel else "")
+        if kind:
+            return FileResponse(target, media_type=kind, headers={
+                "content-disposition": "inline",
+                "content-security-policy": "default-src 'none'; style-src 'unsafe-inline'; sandbox",
+            })
+        return FileResponse(target, media_type="application/octet-stream", filename=target.name)
+
+    @app.get("/wikis/open/{vault}")
+    def wiki_open(session, vault: str, name: str = "", src: str = "") -> Any:
+        """A link by name (from a diagram, or to a note that doesn't exist yet)."""
+        if vault not in _vaults() or not name.strip():
+            return gone(session, "Note not found", "There's no such note here.")
+        with use_vault(vault):
+            index = links.VaultIndex()
+            found = index.resolve(name, from_note=src or None)
+        if found:
+            return RedirectResponse(note_url(vault, found), status_code=303)
+        return gone(session, f"No note called “{name}” yet",
+                    "Something links to it, but it doesn't exist. In Obsidian, clicking the link creates it.")
+
+    @app.get("/wikis/tag/{vault}")
+    def wiki_tag(session, vault: str, tag: str = "") -> Any:
+        """The notes with a tag (nested tags included, as in Obsidian)."""
+        tag = tag.strip().lstrip("#")
+        if vault not in _vaults() or not tag:
+            return gone(session, "Tag not found", "There's no such tag here.")
+        with use_vault(vault):
+            found = sorted(links.notes_with_tag(tag), key=str.casefold)
+        items = [Li(A(p.rsplit("/", 1)[-1][:-3], href=note_url(vault, p)),
+                    Span(p.rsplit("/", 1)[0], cls="dir") if "/" in p else "") for p in found]
+        return wiki_page(f"#{tag}", session, Section(
+            Div(crumbs(vault, ""), cls="note-top"),
+            Div(H1(f"#{tag}", cls="note-title"), Div(Span(plural(len(found), "note")), cls="note-meta"),
+                cls="note-head"),
+            Div(Ul(*items), cls="linked tagged") if items else P("No notes have this tag.", cls="muted"),
+            cls="note-page"))
+
+    @app.get("/static/{digest}/{name:path}")
+    def static_file(digest: str, name: str) -> Any:
+        """The viewer's script and stylesheet, KaTeX and Pele (assets.py). Any digest works:
+        a page from before a deploy still gets today's files."""
+        if name == assets.GENERATED:
+            return Response(assets.note_css(), media_type=assets.content_type(name))
+        path = assets.files().get(name)
+        if path is None:
+            return Response("Not found", status_code=404)
+        return FileResponse(path, media_type=assets.content_type(name))
 
     def _list_details(summary: str, items: list[Any], total: int) -> Any:
         if not total:
@@ -783,6 +967,15 @@ _ICON_PATHS = {
     "image": '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="9" cy="10" r="1.6"/><path d="m21 16-5-5-8 9"/>',
     "file": '<path d="M14 3H7a1 1 0 0 0-1 1v16a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V7z"/><path d="M14 3v4h4"/>',
 }
+# GitHub's mark (Octicons, MIT), in the current text colour.
+GITHUB_MARK = (
+    '<svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17'
+    '.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01'
+    ' 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15'
+    '-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44'
+    ' 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2'
+    ' 0 .21.15.46.55.38A8.013 8.013 0 0 0 16 8c0-4.42-3.58-8-8-8z"/></svg>'
+)
 ICONS = ('<svg width="0" height="0" style="position:absolute" aria-hidden="true">'
          + "".join(f'<symbol id="i-{k}" viewBox="0 0 24 24">{v}</symbol>' for k, v in _ICON_PATHS.items())
          + "</svg>")

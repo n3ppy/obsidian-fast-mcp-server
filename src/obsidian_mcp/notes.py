@@ -26,13 +26,15 @@ def list_notes(subdir: str | None = None) -> list[str]:
     base = resolve_inside_vault(subdir) if subdir else vault_root()
     if not base.is_dir():
         raise VaultError(f"Not a directory: {base}")
-    out: list[str] = []
+    out: set[str] = set()
     for p in base.rglob("*.md"):
         if any(part.startswith(".") for part in p.relative_to(vault_root()).parts):
             continue
-        out.append(relative_to_vault(p))
-    out.sort()
-    return out
+        try:
+            out.add(relative_to_vault(p))
+        except ValueError:
+            continue  # a symlink to somewhere outside the vault: never listed, so never read
+    return sorted(out)
 
 
 def read_note(path: str) -> str:

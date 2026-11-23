@@ -22,6 +22,11 @@ dependencies = [
 dashboard = [
     "python-fasthtml>=0.14,<0.15",
     "tzdata",  # time zones on systems without a zone database (slim images)
+    # The note viewer (render/): markdown, code colours, and the sanitiser.
+    "markdown-it-py>=4.3,<5",
+    "mdit-py-plugins>=0.7,<0.8",
+    "pygments>=2.21",
+    "nh3>=0.3.8,<0.4",
 ]
 
 [project.scripts]

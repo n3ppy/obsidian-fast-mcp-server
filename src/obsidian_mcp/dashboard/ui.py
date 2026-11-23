@@ -225,6 +225,13 @@ a.file:hover { text-decoration:none; } a.file:hover .nm { text-decoration:underl
 .ic { width:16px; height:16px; flex:none; fill:none; stroke:currentColor; stroke-width:1.7; stroke-linecap:round;
   stroke-linejoin:round; color:var(--muted); }
 .ic.folder, .ic.vault { color:var(--accent); } .ic.pdf { color:var(--err); } .ic.image { color:var(--s1); }
+/* the GitHub button at the far right of a file: shown on hover, always on touch screens */
+li.f .gh { display:inline-flex; flex:none; padding:4px; margin:-3px -3px -3px 0; border-radius:7px; color:var(--muted);
+  visibility:hidden; }
+li.f .gh svg { width:15px; height:15px; fill:currentColor; }
+li.f:hover .gh, li.f:focus-within .gh { visibility:visible; }
+li.f .gh:hover { color:var(--fg); background:var(--line); }
+@media (hover:none) { li.f .gh { visibility:visible; } }
 @media (max-width:640px) {
   .meta .reads { display:none; } .file .dir { display:none; } header .who { display:none; }
   /* phones: logo and sign-out on one row, the tabs scroll underneath, and the header scrolls away */
