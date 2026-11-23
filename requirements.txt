@@ -2,3 +2,4 @@ fastmcp>=4.2,<5
 mcp>=2.3,<3
 pyyaml>=6.0
 pypdf>=4.2.0
+# Dashboard (optional, OBSIDIAN_MCP_DASHBOARD=true): pip install ".[dashboard]"

@@ -55,6 +55,20 @@ def _env(name: str, default: str | None = None) -> str | None:
     return value if value else default
 
 
+def _bool(value: str | None) -> bool:
+    return (value or "").strip().lower() in {"1", "true", "yes", "on"}
+
+
+def _int(name: str, default: int) -> int:
+    raw = _env(name)
+    if raw is None:
+        return default
+    try:
+        return int(raw)
+    except ValueError as exc:
+        raise ConfigError(f"{name} must be a whole number, got {raw!r}") from exc
+
+
 @dataclass(frozen=True)
 class Settings:
     transport: str = "stdio"
@@ -71,6 +85,10 @@ class Settings:
     github_client_secret: str | None = None
     allowed_users: tuple[str, ...] = ()  # GitHub logins, lowercased
     jwt_key: str | None = None
+    dashboard: bool = False
+    activity_days: int = 90  # 0 keeps the activity log forever; negative turns it off
+    dashboard_secret: str | None = None
+    timezone: str = "UTC"
 
     @property
     def is_http(self) -> bool:
@@ -123,11 +141,42 @@ def load_settings() -> Settings:
             if u.strip()
         ),
         jwt_key=_env("OBSIDIAN_MCP_JWT_KEY"),
+        dashboard=_bool(_env("OBSIDIAN_MCP_DASHBOARD", "false")),
+        activity_days=_int("OBSIDIAN_MCP_ACTIVITY_DAYS", 90),
+        dashboard_secret=_env("OBSIDIAN_MCP_DASHBOARD_SECRET"),
+        timezone=_env("OBSIDIAN_MCP_TIMEZONE", "UTC") or "UTC",
     )
 
     if is_http:
         _validate_http(settings)
     return settings
+
+
+def _dashboard_problems(settings: Settings) -> list[str]:
+    problems: list[str] = []
+    try:
+        import fasthtml  # noqa: F401
+    except ImportError:
+        problems.append(
+            "OBSIDIAN_MCP_DASHBOARD=true needs the dashboard extra: pip install 'obsidian-mcp[dashboard]'"
+        )
+    try:
+        from zoneinfo import ZoneInfo
+
+        ZoneInfo(settings.timezone)
+    except Exception:  # noqa: BLE001 - unknown key or no tz database
+        problems.append(
+            f"OBSIDIAN_MCP_TIMEZONE is not a known time zone: {settings.timezone!r} "
+            "(use a name like Australia/Perth or Europe/Paris)"
+        )
+    if settings.activity_days < 0:
+        problems.append("the dashboard needs the activity log: OBSIDIAN_MCP_ACTIVITY_DAYS must be 0 or more")
+    if settings.dashboard_secret is not None and len(settings.dashboard_secret) < MIN_JWT_KEY_LENGTH:
+        problems.append(
+            f"OBSIDIAN_MCP_DASHBOARD_SECRET must be at least {MIN_JWT_KEY_LENGTH} characters "
+            "(generate one with: openssl rand -hex 32)"
+        )
+    return problems
 
 
 def _validate_http(settings: Settings) -> None:
@@ -171,5 +220,7 @@ def _validate_http(settings: Settings) -> None:
             f"OBSIDIAN_MCP_TOKEN must be at least {MIN_STATIC_TOKEN_LENGTH} characters "
             "(generate one with: openssl rand -hex 32)"
         )
+    if settings.dashboard:
+        problems.extend(_dashboard_problems(settings))
     if problems:
         raise ConfigError("Invalid HTTP configuration:\n  - " + "\n  - ".join(problems))

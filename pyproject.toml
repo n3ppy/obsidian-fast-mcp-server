@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "obsidian-mcp"
-version = "1.1"
+version = "1.4"
 description = "MCP server connecting Claude (Code, web, mobile) to a Git-synced Obsidian vault: notes, tags, backlinks, PDFs."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -15,6 +15,13 @@ dependencies = [
     "mcp>=2.3,<3",
     "pyyaml>=6.0",
     "pypdf>=4.2.0",
+]
+
+[project.optional-dependencies]
+# The web dashboard at /dash (OBSIDIAN_MCP_DASHBOARD=true).
+dashboard = [
+    "python-fasthtml>=0.14,<0.15",
+    "tzdata",  # time zones on systems without a zone database (slim images)
 ]
 
 [project.scripts]

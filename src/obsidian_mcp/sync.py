@@ -9,12 +9,18 @@ server never works on a stale copy. After each write the server calls
 :func:`commit_and_push` to mirror the change back to the remote. Push conflicts trigger
 an automatic pull-rebase and retry.
 
-All git operations are serialised by a single lock: tools run in worker threads and
-two concurrent `git` processes on one repository would trip over `index.lock`.
+All git operations on one vault are serialised by that vault's lock: tools run in
+worker threads and two concurrent `git` processes on one repository would trip over
+`index.lock`. Different vaults don't wait for each other.
 
 Authentication: set `OBSIDIAN_GIT_TOKEN` (e.g. a fine-grained GitHub token limited to
-the vault repos; one token covers every vault). It is handed to git through a credential helper that reads the
-environment, so it never ends up in the remote URL or in `.git/config`.
+the vault repos; one token covers every vault). An embedding app can instead give each
+vault its own `credentials` function (see ``vault.Vault``). Either way the token is
+handed to git through a credential helper that reads the environment, so it never ends
+up in the remote URL or in `.git/config`.
+
+A remote with no commits yet (a freshly created repository) is fine: pulls report it as
+empty and the first write pushes the branch and sets its upstream.
 """
 
 from __future__ import annotations
@@ -25,21 +31,52 @@ import threading
 import time
 from pathlib import Path
 
-from .vault import VaultError, configured_vaults, get_vault, use_vault, vault_root
+from .vault import Vault, VaultError, configured_vaults, get_vault, use_vault, vault_root
 
 
 class SyncError(VaultError):
     pass
 
 
-# Re-entrant: commit_and_push() calls pull logic while already holding it.
-lock = threading.RLock()
-_last_pull: dict[str, float] = {}  # vault name -> monotonic time of last pull
+# One re-entrant lock per vault (commit_and_push() calls pull logic while holding it).
+_locks: dict[str, threading.RLock] = {}
+_locks_guard = threading.Lock()
+_last_pull: dict[str, float] = {}  # vault key -> monotonic time of last pull
+# vault key -> last pull/push outcomes (wall-clock times), shown on the dashboard.
+_status: dict[str, dict[str, object]] = {}
 
 _CREDENTIAL_HELPER = (
     '!f() { test "$1" = get || exit 0; echo username=x-access-token; '
     'echo "password=$OBSIDIAN_GIT_TOKEN"; }; f'
 )
+# Git commands that talk to the remote, and so may need the token.
+_NETWORK_COMMANDS = {"clone", "pull", "push", "fetch", "ls-remote"}
+EMPTY_REMOTE = "remote is empty"
+
+
+def vault_lock(vault: Vault | None = None) -> threading.RLock:
+    """The lock serialising git work on `vault` (the current vault by default)."""
+    key = (vault or get_vault()).key
+    with _locks_guard:
+        found = _locks.get(key)
+        if found is None:
+            found = _locks[key] = threading.RLock()
+        return found
+
+
+def forget(vault: Vault) -> None:
+    """Drop the lock and sync state kept for a vault (when it is removed)."""
+    with _locks_guard:
+        _locks.pop(vault.key, None)
+    _last_pull.pop(vault.key, None)
+    _status.pop(vault.key, None)
+
+
+def _current_vault() -> Vault | None:
+    try:
+        return get_vault()
+    except VaultError:
+        return None
 
 
 def remote_url() -> str | None:
@@ -53,8 +90,8 @@ def is_enabled() -> bool:
     return remote_url() is not None
 
 
-def _last(name: str) -> float:
-    return _last_pull.get(name, 0.0)
+def _last(key: str) -> float:
+    return _last_pull.get(key, 0.0)
 
 
 def auto_push_enabled() -> bool:
@@ -66,12 +103,49 @@ def auto_push_enabled() -> bool:
     }
 
 
+def _note(event: str, error: str | None = None) -> None:
+    """Remember the outcome of a pull or push for the current vault."""
+    vault = _current_vault()
+    if vault is None:
+        return
+    entry = _status.setdefault(vault.key, {})
+    if error is None:
+        entry[f"last_{event}"] = time.time()
+        entry.pop(f"{event}_error", None)
+    else:
+        entry[f"{event}_error"] = error
+        entry[f"{event}_error_at"] = time.time()
+
+
+def status_snapshot() -> dict[str, dict[str, object]]:
+    """Last pull and push times and errors, per vault key (copies)."""
+    return {key: dict(entry) for key, entry in _status.items()}
+
+
+def _token(vault: Vault | None, args: tuple[str, ...]) -> str | None:
+    """The git password for this command: the vault's own credentials (asked only for
+    commands that reach the remote), else the environment's OBSIDIAN_GIT_TOKEN."""
+    if vault is None or vault.credentials is None:
+        return os.environ.get("OBSIDIAN_GIT_TOKEN") or None
+    if not args or args[0] not in _NETWORK_COMMANDS:
+        return None
+    try:
+        return vault.credentials()
+    except Exception as exc:  # noqa: BLE001 - reported as a sync problem
+        raise SyncError(f"could not get git credentials for vault {vault.name!r}: {exc}") from exc
+
+
 def _git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProcess[str]:
+    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
+    # Only the token chosen below reaches git: a vault with its own credentials never
+    # sees the operator's token.
+    env.pop("OBSIDIAN_GIT_TOKEN", None)
+    token = _token(_current_vault(), args)
     prefix: list[str] = []
-    if os.environ.get("OBSIDIAN_GIT_TOKEN"):
+    if token:
+        env["OBSIDIAN_GIT_TOKEN"] = token
         # The empty value resets any helper inherited from the global config.
         prefix = ["-c", "credential.helper=", "-c", f"credential.helper={_CREDENTIAL_HELPER}"]
-    env = {**os.environ, "GIT_TERMINAL_PROMPT": "0"}
     result = subprocess.run(
         ["git", *prefix, *args], cwd=str(cwd), capture_output=True, text=True, check=False, env=env
     )
@@ -84,10 +158,28 @@ def _git(*args: str, cwd: Path, check: bool = True) -> subprocess.CompletedProce
 
 
 def _configure_identity(repo: Path) -> None:
-    name = os.environ.get("OBSIDIAN_GIT_NAME", "Obsidian MCP")
-    email = os.environ.get("OBSIDIAN_GIT_EMAIL", "obsidian-mcp@local")
+    vault = _current_vault()
+    name = (vault.git_name if vault else None) or os.environ.get("OBSIDIAN_GIT_NAME", "Obsidian MCP")
+    email = (vault.git_email if vault else None) or os.environ.get("OBSIDIAN_GIT_EMAIL", "obsidian-mcp@local")
     _git("config", "user.name", name, cwd=repo, check=False)
     _git("config", "user.email", email, cwd=repo, check=False)
+
+
+def _remote_is_empty(repo: Path) -> bool:
+    """True when the remote has no branches yet (a freshly created repository)."""
+    result = _git("ls-remote", "--heads", "origin", cwd=repo, check=False)
+    return result.returncode == 0 and not result.stdout.strip()
+
+
+def _has_upstream(repo: Path) -> bool:
+    return _git("rev-parse", "--abbrev-ref", "@{upstream}", cwd=repo, check=False).returncode == 0
+
+
+def _push(repo: Path) -> subprocess.CompletedProcess[str]:
+    """Push the current branch; the first push to an empty remote also sets its upstream."""
+    if _has_upstream(repo):
+        return _git("push", cwd=repo, check=False)
+    return _git("push", "-u", "origin", "HEAD", cwd=repo, check=False)
 
 
 def ensure_clone() -> str:
@@ -132,8 +224,15 @@ def _pull_locked(root: Path) -> str:
     message = (result.stdout + result.stderr).strip()
     if result.returncode != 0:
         _abort_rebase_if_needed(root)
+        if not _has_upstream(root) and _remote_is_empty(root):
+            # Nothing to pull from a repository with no commits; the first write pushes.
+            _last_pull[get_vault().key] = time.monotonic()
+            _note("pull")
+            return EMPTY_REMOTE
+        _note("pull", message)
         raise SyncError(f"git pull failed: {message}")
-    _last_pull[get_vault().name] = time.monotonic()
+    _last_pull[get_vault().key] = time.monotonic()
+    _note("pull")
     return message or "up to date"
 
 
@@ -142,7 +241,7 @@ def pull() -> str:
     if not is_enabled():
         return "sync disabled"
     root = vault_root()
-    with lock:
+    with vault_lock():
         return _pull_locked(root)
 
 
@@ -161,13 +260,13 @@ def maybe_pull() -> str | None:
     interval = pull_interval()
     if not is_enabled() or interval < 0:
         return None
-    name = get_vault().name
-    if time.monotonic() - _last(name) < interval:
+    key = get_vault().key
+    if time.monotonic() - _last(key) < interval:
         return None
     root = vault_root()
-    with lock:
+    with vault_lock():
         # Another thread may have pulled while we waited for the lock.
-        if time.monotonic() - _last(name) < interval:
+        if time.monotonic() - _last(key) < interval:
             return None
         return _pull_locked(root)
 
@@ -183,30 +282,64 @@ def commit_and_push(message: str) -> str:
         return "sync disabled"
     root = vault_root()
 
-    with lock:
+    with vault_lock():
         _git("add", "-A", cwd=root)
         if not _has_changes(root):
             return "nothing to commit"
 
         _git("commit", "-m", message, cwd=root)
 
-        push = _git("push", cwd=root, check=False)
+        push = _push(root)
         if push.returncode == 0:
+            _note("push")
             return "pushed"
 
         pull_result = _git("pull", "--rebase", "--autostash", cwd=root, check=False)
         if pull_result.returncode != 0:
             _abort_rebase_if_needed(root)
+            detail = (pull_result.stderr or pull_result.stdout).strip()
+            _note("push", f"push rejected and automatic rebase failed: {detail}")
             raise SyncError(
                 "push rejected and automatic rebase failed (your change is committed locally "
                 "and will be pushed once the conflict is resolved on another device): "
-                f"{(pull_result.stderr or pull_result.stdout).strip()}"
+                f"{detail}"
             )
-        push = _git("push", cwd=root, check=False)
+        push = _push(root)
         if push.returncode != 0:
-            raise SyncError(f"git push failed after rebase: {(push.stderr or push.stdout).strip()}")
-        _last_pull[get_vault().name] = time.monotonic()
+            detail = (push.stderr or push.stdout).strip()
+            _note("push", f"push failed after rebase: {detail}")
+            raise SyncError(f"git push failed after rebase: {detail}")
+        _last_pull[get_vault().key] = time.monotonic()
+        _note("pull")
+        _note("push")
         return "pushed (after rebase)"
+
+
+def head() -> str | None:
+    """The current commit of the current vault, or None outside a git repository."""
+    try:
+        result = _git("rev-parse", "HEAD", cwd=vault_root(), check=False)
+    except (VaultError, OSError):
+        return None
+    sha = result.stdout.strip()
+    return sha if result.returncode == 0 and sha else None
+
+
+def ahead_behind() -> tuple[int, int] | None:
+    """(commits not yet pushed, commits not yet pulled) against the last fetch of the
+    upstream branch. No network access. None when there is no upstream."""
+    if not is_enabled():
+        return None
+    try:
+        result = _git(
+            "rev-list", "--left-right", "--count", "HEAD...@{upstream}", cwd=vault_root(), check=False
+        )
+    except (VaultError, OSError):
+        return None
+    parts = result.stdout.split()
+    if result.returncode != 0 or len(parts) != 2:
+        return None
+    return int(parts[0]), int(parts[1])
 
 
 def auto_commit(action: str, path: str) -> str:

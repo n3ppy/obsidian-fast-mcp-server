@@ -8,7 +8,7 @@ from typing import Any
 
 from mcp.types import ToolAnnotations
 
-from .. import sync
+from .. import activity, sync
 from ..vault import Vault, VaultError, configured_vaults, use_vault
 
 READ = ToolAnnotations(read_only_hint=True, destructive_hint=False, open_world_hint=False)
@@ -64,10 +64,10 @@ def run_write(
     vault: str | None, action: str, fn: Callable[[], tuple[str, dict[str, Any]]]
 ) -> dict[str, Any]:
     """Run a change on one vault: pick the vault (explicitly when there are several),
-    then hold the git lock for pull → write → commit → push, so a background pull
-    can't rebase under a half-written file. `fn` returns (path, payload)."""
+    then hold the vault's git lock for pull → write → commit → push, so a background
+    pull can't rebase under a half-written file. `fn` returns (path, payload)."""
     try:
-        with use_vault(vault, explicit=True) as v, sync.lock:
+        with use_vault(vault, explicit=True) as v, sync.vault_lock(v):
             extra: dict[str, Any] = _tag(v)
             _refresh(extra)
             try:
@@ -84,7 +84,10 @@ def _with_sync(action: str, path: str, payload: dict[str, Any]) -> dict[str, Any
         status = sync.auto_commit(action, path)
     except VaultError as exc:
         payload["sync_error"] = str(exc)
+        activity.note_commit(None, f"error: {exc}")
     else:
         if status not in _QUIET_SYNC:
             payload["sync"] = status
+        if status.startswith("pushed"):
+            activity.note_commit(sync.head(), status)
     return payload
