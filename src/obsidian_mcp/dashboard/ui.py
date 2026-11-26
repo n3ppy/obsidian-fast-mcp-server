@@ -3,12 +3,16 @@
 The look: warm paper, near-black ink, hairlines and one violet accent. Light is the
 default; the header's sun/moon link switches to dark and back, and the choice is kept in a
 site-wide ``theme`` cookie (no JavaScript needed).
+
+With several vaults, a switcher next to the brand picks the one the pages are about, or
+all of them (the default). The choice is a ``dash_vault`` cookie, limited to the
+dashboard's own path, and only ever narrows what the viewer can already see.
 """
 
 from __future__ import annotations
 
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from contextvars import ContextVar
 from datetime import datetime
 from typing import Any
@@ -17,7 +21,7 @@ from zoneinfo import ZoneInfo
 
 from fasthtml.common import (
     A, Body, Button, Details, Div, Form, H1, Head, Header, Html, Input, Main, Meta, Nav, NotStr, P, Script, Section,
-    Span, Style, Summary, Title, to_xml,
+    Small, Span, Style, Summary, Title, to_xml,
 )
 from starlette.requests import cookie_parser
 from starlette.responses import HTMLResponse
@@ -26,6 +30,8 @@ BASE = "/dash"
 HTMX_SRC = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.7/dist/htmx.min.js"
 THEME_COOKIE = "theme"
 THEMES = ("light", "dark")
+FOCUS_COOKIE = "dash_vault"  # the vault the switcher picked; path-limited to the dashboard
+VAULT_WORDS = ("vault", "vaults")  # what the switcher calls them (an embedding app can say "knowledge base")
 
 TOOL_LABELS = {
     "read_note": "Read note", "read_pdf": "Read PDF", "search_notes": "Searched",
@@ -108,6 +114,29 @@ header form { margin:0; }
 .drawer-links a .badge { float:right; margin-top:1px; font-variant-numeric:tabular-nums; }
 .drawer-links form { margin:8px 0 0; padding-top:8px; border-top:1px solid var(--line); }
 .drawer-links button.link { color:var(--muted); }
+/* the vault switcher, after the brand ("kintex / notes"): a <details> menu, no JavaScript */
+.vaults { position:relative; min-width:0; margin-left:-12px; }
+.vaults > summary { list-style:none; display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:8px;
+  font-size:14px; font-weight:600; letter-spacing:-.01em; cursor:pointer; user-select:none; }
+.vaults > summary::-webkit-details-marker { display:none; }
+.vaults > summary:hover { background:var(--soft); }
+.vaults .slash { color:var(--faint); font-weight:400; }
+.vaults .cur { max-width:22ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vaults[open] > summary::before { content:""; position:fixed; inset:0; z-index:20; cursor:default; }
+.vault-menu { position:absolute; top:calc(100% + 6px); left:0; z-index:21; width:max-content; min-width:240px;
+  max-width:min(340px, 86vw); padding:6px; background:var(--card); border:1px solid var(--line); border-radius:12px;
+  box-shadow:0 20px 60px -30px rgba(14,14,16,.35); }
+.vault-menu a { display:flex; flex-wrap:wrap; align-items:center; gap:0 10px; padding:8px 10px; border-radius:8px;
+  color:var(--fg); font-size:14px; }
+.vault-menu a:hover { background:var(--soft); text-decoration:none; }
+.vault-menu a.on { font-weight:600; }
+.vault-menu a .nm { min-width:0; }
+.vault-menu a small { flex-basis:100%; color:var(--muted); font-size:12px; font-weight:400; overflow-wrap:anywhere; }
+.vault-menu .tick { width:15px; height:15px; margin-left:auto; flex:none; fill:none; stroke:var(--accent);
+  stroke-width:2.4; stroke-linecap:round; stroke-linejoin:round; }
+.vault-links { margin-top:6px; padding-top:6px; border-top:1px solid var(--line); }
+.vault-links a { color:var(--muted); }
+.vault-links a:hover { color:var(--fg); }
 .theme-toggle a { display:inline-flex; padding:5px; border-radius:8px; color:var(--muted); }
 .theme-toggle a:hover { color:var(--fg); background:var(--soft); }
 .theme-toggle .to-light { display:none; }
@@ -236,6 +265,7 @@ li.f .gh:hover { color:var(--fg); background:var(--line); }
   .meta .reads { display:none; } .file .dir { display:none; } header .who { display:none; }
   /* phones: logo and sign-out on one row, the tabs scroll underneath, and the header scrolls away */
   header { position:static; }
+  .vaults .cur { max-width:12ch; }
   header nav { order:3; flex-basis:100%; flex-wrap:nowrap; overflow-x:auto; margin:0 -4px; }
   nav a { white-space:nowrap; }
 }
@@ -256,8 +286,10 @@ _SUN = ('<svg class="ic-theme" viewBox="0 0 24 24" aria-hidden="true"><circle cx
         'M17.66 6.34l1.41-1.41"/></svg>')
 
 _CHEVRON = ('<svg class="chev" viewBox="0 0 24 24" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>')
+_TICK = '<svg class="tick" viewBox="0 0 24 24" aria-hidden="true"><path d="M5 12.5l4.5 4.5L19 7.5"/></svg>'
 
 _theme: ContextVar[str | None] = ContextVar("dash_theme", default=None)
+_focus: ContextVar[str | None] = ContextVar("dash_focus", default=None)
 _here: ContextVar[str] = ContextVar("dash_here", default=f"{BASE}/")
 _base: ContextVar[str] = ContextVar("dash_base", default=BASE)
 
@@ -269,8 +301,8 @@ def base() -> str:
 
 
 class ThemeMiddleware:
-    """ASGI: for each request, remember the viewer's theme cookie and the page's own path
-    (the theme links send people back to where they were)."""
+    """ASGI: for each request, remember the viewer's theme and vault cookies and the
+    page's own path (the theme and vault links send people back to where they were)."""
 
     def __init__(self, app: Any) -> None:
         self.app = app
@@ -280,18 +312,27 @@ class ThemeMiddleware:
             await self.app(scope, receive, send)
             return
         raw = next((v for k, v in scope.get("headers") or [] if k == b"cookie"), b"")
-        theme = cookie_parser(raw.decode("latin-1")).get(THEME_COOKIE)
+        cookies = cookie_parser(raw.decode("latin-1"))
+        theme = cookies.get(THEME_COOKIE)
         root, path = scope.get("root_path", ""), scope.get("path", "")
         here = path if path.startswith(root) else root + path
         query = scope.get("query_string", b"").decode("latin-1")
         tokens = (_theme.set(theme if theme in THEMES else None), _here.set(here + (f"?{query}" if query else "")),
-                  _base.set(root.rstrip("/") or BASE))
+                  _base.set(root.rstrip("/") or BASE), _focus.set(cookies.get(FOCUS_COOKIE) or None))
         try:
             await self.app(scope, receive, send)
         finally:
             _theme.reset(tokens[0])
             _here.reset(tokens[1])
             _base.reset(tokens[2])
+            _focus.reset(tokens[3])
+
+
+def focused(names: Sequence[str]) -> str | None:
+    """The vault the viewer picked in the switcher, if it's one of `names` (the viewer's
+    own); None means all of them. A stale or foreign name counts as no choice."""
+    name = _focus.get()
+    return name if name and name in names else None
 
 
 def theme_attrs() -> dict[str, str]:
@@ -363,15 +404,47 @@ def account_menu(user: str | None, items: tuple[tuple[Any, ...], ...], logout: A
     )
 
 
+def vault_switcher(vaults: Sequence[tuple[str, str]], links: Sequence[tuple[str, str]] = (),
+                   words: tuple[str, str] = VAULT_WORDS) -> Any:
+    """The vault the pages are about, after the brand, and a menu to pick another: "All
+    vaults" (with several), each vault with where it lives, then the embedding app's
+    `links` ("New knowledge base"). `vaults` are (name, where it lives) pairs. Nothing
+    when there's only one vault and no links, so a single vault looks as it always did."""
+    if not vaults or (len(vaults) == 1 and not links):
+        return ""
+    names = [name for name, _ in vaults]
+    current = names[0] if len(names) == 1 else focused(names)
+    everything = f"All {words[1]}"
+    here = quote(_here.get(), safe="/")
+
+    def choice(name: str | None, label: str, where: str | None = None) -> Any:
+        on = name == current
+        return A(Span(label, cls="nm"), NotStr(_TICK) if on else "", Small(where) if where else "",
+                 href=f"{base()}/focus?vault={quote(name or '', safe='')}&next={here}", cls="on" if on else None,
+                 aria_current="true" if on else None)
+
+    items = ([choice(None, everything)] if len(names) > 1 else []) + [choice(n, n, w) for n, w in vaults]
+    return Details(
+        Summary(Span("/", cls="slash", aria_hidden="true"), Span(current or everything, cls="cur"), NotStr(_CHEVRON),
+                title=f"Choose a {words[0]}", aria_label=f"{words[0].capitalize()}: {current or everything}"),
+        Div(Div(*items), Div(*[A(label, href=href) for label, href in links], cls="vault-links") if links else "",
+            cls="vault-menu"),
+        cls="vaults",
+    )
+
+
 def page(
     title: str, active: str, user: str | None, csrf: str | None, *content: Any,
     brand: str = "Vault dashboard", extra_nav: tuple[tuple[str, str], ...] = (),
     logout_action: str | None = None, masthead: Any = None, menu: tuple[tuple[Any, ...], ...] = (),
-    extra_css: str = "", at: str | None = None,
+    extra_css: str = "", at: str | None = None, vaults: Sequence[tuple[str, str]] = (),
+    vault_links: Sequence[tuple[str, str]] = (), vault_words: tuple[str, str] = VAULT_WORDS,
 ) -> HTMLResponse:
-    """A dashboard page: the brand, the tabs, the theme switch and the account menu.
-    `menu` adds the embedding app's pages (Settings, ...) to the account menu; `at` is
-    where the dashboard is when the page isn't served by the dashboard itself."""
+    """A dashboard page: the brand, the vault switcher, the tabs, the theme switch and the
+    account menu. `menu` adds the embedding app's pages (Settings, ...) to the account
+    menu; `vaults`, `vault_links` and `vault_words` make the switcher (see
+    `vault_switcher`); `at` is where the dashboard is when the page isn't served by the
+    dashboard itself."""
     token = _base.set(at) if at else None
     try:
         here = base()
@@ -383,8 +456,9 @@ def page(
             method="post", action=logout_action or f"{here}/logout",
         )
         top = Div(masthead, cls="brand") if masthead is not None else H1(brand)
+        switcher = vault_switcher(vaults, vault_links, vault_words)
         right = Div(theme_toggle(), account_menu(user, menu, logout, active), cls="right")
-        return document(f"{title} · {brand}", Body(Header(top, Nav(*links), right), Main(*content)),
+        return document(f"{title} · {brand}", Body(Header(top, switcher, Nav(*links), right), Main(*content)),
                         extra_css=extra_css)
     finally:
         if token is not None:

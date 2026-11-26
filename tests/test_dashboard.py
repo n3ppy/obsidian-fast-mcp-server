@@ -490,6 +490,86 @@ def test_client_id_is_read_from_the_servers_own_token() -> None:
     assert _jwt_client_id("a.!!!.c") is None
 
 
+def test_the_switcher_narrows_every_page_to_one_vault(vault_env, tmp_path: Path) -> None:
+    """With two vaults, the header's switcher picks one (a cookie limited to /dash), and
+    every page then counts that one alone; "All vaults" goes back to both. A name that
+    isn't one of the vaults counts as no choice."""
+    work = tmp_path / "work-remote.git"
+    git("init", "--bare", "-b", "main", str(work), cwd=tmp_path)
+    seed = tmp_path / "work-seed"
+    git("clone", str(work), str(seed), cwd=tmp_path)
+    (seed / "Plan.md").write_text("# Plan\n", encoding="utf-8")
+    git("add", "-A", cwd=seed)
+    git("-c", "user.name=t", "-c", "user.email=t@t", "commit", "-m", "plan", cwd=seed)
+    git("push", "-u", "origin", "main", cwd=seed)
+    vault_env["monkeypatch"].setenv("OBSIDIAN_EXTRA_VAULTS", f"work={work}")
+    vault_env["monkeypatch"].setenv("OBSIDIAN_VAULTS_DIR", str(tmp_path / "vaults"))
+    from obsidian_mcp import sync
+
+    sync.bootstrap_all()
+    server = make_server()
+    run(call_tools(server, [("read_note", {"path": "Inbox/Welcome"}),
+                            ("read_note", {"path": "Plan", "vault": "work"}),
+                            ("read_note", {"path": "Plan", "vault": "work"})]))
+
+    async def check() -> None:
+        async with Web(server) as web:
+            await sign_in(web)
+            both = (await web.get("/dash/activity")).text
+            header = both[both.index("<header"):both.index("</header>")]
+            # Both vaults, where each lives, and "All vaults" ticked: the default.
+            assert 'class="vaults"' in header and '<span class="cur">All vaults</span>' in header
+            assert 'href="/dash/focus?vault=work&amp;next=/dash/activity"' in header
+            assert 'href="/dash/focus?vault=&amp;next=/dash/activity"' in header
+            assert "<small>Git</small>" in header  # a local remote: no GitHub link to make
+            assert "Inbox/Welcome.md" in both and "Plan.md" in both
+            assert "<small class=\"muted\"> · work</small>" in both  # all of several: each row says where
+
+            picked = await web.get("/dash/focus?vault=work&next=/dash/activity")
+            assert picked.status_code == 303 and picked.headers["location"] == "/dash/activity"
+            cookie = picked.headers["set-cookie"].lower()
+            assert cookie.startswith("dash_vault=work") and "path=/dash" in cookie and "httponly" in cookie
+            one = (await web.get("/dash/activity")).text
+            assert '<span class="cur">work</span>' in one and "Plan.md" in one and "Inbox/Welcome.md" not in one
+            assert " · work</small>" not in one  # one vault on screen: no need to say which
+            overview = (await web.get("/dash/")).text
+            assert "Plan.md" in overview and "Inbox/Welcome.md" not in overview
+            wikis = (await web.get("/dash/wikis")).text
+            assert ">Plan<" in wikis and ">Welcome<" not in wikis
+            insights = (await web.get("/dash/insights")).text
+            assert "Vault: work" in insights and "Vault: principal" not in insights
+            health = (await web.get("/dash/health")).text
+            sync_table = health[health.index("<h2>Sync"):health.index("Recent sync errors")]
+            assert "<td>work</td>" in sync_table and "<td>principal</td>" not in sync_table
+            # A note of the other vault still opens by its address.
+            note = await web.get("/dash/wikis/note/principal?path=Inbox/Welcome.md")
+            assert note.status_code == 200
+
+            # "All vaults" forgets the choice, and the way back never leaves the site.
+            cleared = await web.get("/dash/focus?vault=&next=https://evil.example/")
+            assert cleared.status_code == 303 and cleared.headers["location"] == "/dash/"
+            assert "max-age=0" in cleared.headers["set-cookie"].lower()
+            assert "Inbox/Welcome.md" in (await web.get("/dash/activity")).text
+            # A name that isn't a vault here (a stale one, or someone else's) is no choice at all.
+            web.cookies.set("dash_vault", "someone-elses", domain="vault.test", path="/dash")
+            stale = (await web.get("/dash/activity")).text
+            assert '<span class="cur">All vaults</span>' in stale and "Inbox/Welcome.md" in stale
+            assert "max-age=0" in (await web.get("/dash/focus?vault=someone-elses")).headers["set-cookie"].lower()
+
+    run(check())
+
+
+def test_one_vault_has_no_switcher(vault_env) -> None:
+    server = make_server()
+
+    async def check() -> None:
+        async with Web(server) as web:
+            await sign_in(web)
+            assert 'class="vaults"' not in (await web.get("/dash/")).text
+
+    run(check())
+
+
 def test_wiki_tree_lazy_loads_big_vaults(vault_env, monkeypatch) -> None:
     from obsidian_mcp.dashboard import app as dash_app
 

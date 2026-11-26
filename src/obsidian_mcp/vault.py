@@ -50,6 +50,9 @@ class Vault:
     # Embedded use: the author of the commits made in this vault (default: environment).
     git_name: str | None = None
     git_email: str | None = None
+    # Embedded use: where the dashboard says the vault lives ("Hosted by Example").
+    # None: worked out from the remote.
+    label: str | None = field(default=None, compare=False)
 
     @property
     def key(self) -> str:

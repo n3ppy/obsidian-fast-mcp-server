@@ -18,6 +18,7 @@ again on every request, so removing a name locks that person out at once.
 
 from __future__ import annotations
 
+import re
 import secrets
 import time
 from collections.abc import Awaitable, Callable
@@ -42,8 +43,8 @@ from ..vault import VaultError, configured_vaults, use_vault
 from . import assets, charts, stats, viewer
 from .external import ExternalAuth
 from .ui import (
-    BASE, THEME_COOKIE, THEMES, Fmt, ThemeMiddleware, base, bytes_label, empty, head, login_page, page, plural,
-    safe_next, theme_attrs, tool_label,
+    BASE, FOCUS_COOKIE, THEME_COOKIE, THEMES, Fmt, ThemeMiddleware, base, bytes_label, empty, focused, head,
+    login_page, page, plural, safe_next, theme_attrs, tool_label,
 )
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
@@ -203,11 +204,36 @@ def build_app(
     app.add_middleware(ThemeMiddleware)
 
     def shell(title: str, active: str, session, *content: Any) -> Any:
+        choices = tuple((name, where(vault)) for name, vault in _vaults().items())
         if external is not None:
             return page(title, active, external.user(), external.csrf(), *content, brand=brand,
                         extra_nav=external.nav, logout_action=external.logout_url, masthead=external.masthead,
-                        menu=external.menu())
-        return page(title, active, current_user(session), session.get("csrf"), *content)
+                        menu=external.menu(), vaults=choices, vault_links=external.vault_links(),
+                        vault_words=external.vault_words)
+        return page(title, active, current_user(session), session.get("csrf"), *content, vaults=choices)
+
+    # -- which vaults the pages are about (the header's switcher) ----------------------
+
+    def scope() -> str | None:
+        """The one vault the viewer picked, or None: all of theirs."""
+        return focused(list(_vaults()))
+
+    def in_scope() -> dict[str, Any]:
+        vaults = _vaults()
+        name = focused(list(vaults))
+        return {name: vaults[name]} if name else vaults
+
+    @app.get("/focus")
+    def set_focus(req: Request, vault: str = "", next: str = "") -> Response:  # noqa: A002 - the query's name
+        """Pick the vault the pages are about (a cookie, limited to the dashboard's path),
+        or none, for all of them; then back to the page the viewer was on."""
+        response = RedirectResponse(safe_next(next, f"{base()}/"), status_code=303)
+        if vault in _vaults():
+            response.set_cookie(FOCUS_COOKIE, vault, max_age=365 * 24 * 3600, path=base(), samesite="lax",
+                                httponly=True, secure=req.url.scheme == "https")
+        else:
+            response.delete_cookie(FOCUS_COOKIE, path=base())
+        return response
 
     # -- sign in ---------------------------------------------------------------------
 
@@ -365,7 +391,7 @@ def build_app(
 
     def event_rows(events: list[dict], expandable: bool = False) -> list[Any]:
         rows = []
-        multi = len(stats.vault_names()) > 1
+        multi = scope() is None and len(_vaults()) > 1  # all of several: say which vault each was in
         for e in events:
             detail = ""
             if not e["ok"] and e.get("error"):
@@ -441,10 +467,11 @@ def build_app(
     @app.get("/")
     @app.get("/overview")
     def overview(session) -> Any:
-        daily = stats.daily_activity(log, clock, 30)
-        health = stats.sync_health(log)
+        focus = scope()
+        daily = stats.daily_activity(log, clock, 30, vault=focus)
+        health = stats.sync_health(log, vault=focus)
         week = clock.start_of(clock.days(7)[0])
-        errors = stats.errors_by_type(log, week)
+        errors = stats.errors_by_type(log, week, vault=focus)
         reads_series = [("reads", "Claude reads")]
         change_series = [("claude_commits", "By Claude"), ("device_commits", "From your devices")]
         banner = external.banner() if external is not None and external.banner is not None else None
@@ -480,8 +507,8 @@ def build_app(
 
     def top_notes(days: int) -> list[Any]:
         since = time.time() - days * 86400
-        top_read = stats.top_read(log, since)
-        top_changed = stats.top_changed(days)
+        top_read = stats.top_read(log, since, vault=scope())
+        top_changed = stats.top_changed(days, vault=scope())
         switch = Div(*[A(f"{d} days", href=f"{base()}/insights?days={d}", cls="on" if d == days else None)
                        for d in (7, 30, 90)], cls="switch")
         read_table = Div(Table(
@@ -502,7 +529,7 @@ def build_app(
 
     def vault_sections() -> list[Any]:
         sections = []
-        vaults = _vaults()
+        vaults = in_scope()
         for name, vault in vaults.items():
             size = stats.vault_size(vault)
             try:
@@ -518,7 +545,7 @@ def build_app(
                 plural(links_["untagged_count"], "untagged note"),
             ])
             sections.append(Section(
-                H2(f"Vault: {name}" if len(vaults) > 1 else "Vault"),
+                H2(f"Vault: {name}" if len(_vaults()) > 1 else "Vault"),
                 Div(*[Div(Tag(v), Span(k)) for k, v in (
                     ("notes", f"{size['notes']:,}"), ("words", f"{size['words']:,}"),
                     ("folders", f"{size['folders']:,}"), ("attachments", f"{size['attachments']:,}"),
@@ -540,7 +567,7 @@ def build_app(
         return sections
 
     def recent_fragment() -> Any:
-        return event_table(log.events(limit=20))
+        return event_table(log.events(limit=20, vault=scope()))
 
     @app.get("/fragment/recent")
     def recent(session) -> Any:
@@ -563,11 +590,13 @@ def build_app(
         kind = kind if kind in ("read", "write", "sync") else ""
         since = time.time() - days * 86400
         page_no = max(page_no, 1)
+        focus = scope()
         filters = dict(since=since, kind=kind or None, tool=tool or None, errors_only=bool(errors),
-                       path_contains=q or None)
+                       path_contains=q or None, vault=focus)
         total = log.count(**filters)
         events = log.events(**filters, limit=PAGE_SIZE, offset=(page_no - 1) * PAGE_SIZE)
-        tools = sorted({r["tool"] for r in log.query("SELECT DISTINCT tool FROM events")})
+        tools = sorted({r["tool"] for r in (log.query("SELECT DISTINCT tool FROM events WHERE vault = ?", (focus,))
+                                            if focus else log.query("SELECT DISTINCT tool FROM events"))})
 
         def opt(value: str, label: str, current: str) -> Any:
             return Option(label, value=value, selected=(value == current))
@@ -675,7 +704,7 @@ def build_app(
         ctx = wiki_context(name)
         lazy = root["size"] > LAZY_TREE_ENTRIES
         body = Ul(*dir_items(ctx, root, lazy))
-        if len(_vaults()) == 1:
+        if len(in_scope()) == 1:
             return body
         return Ul(Li(Details(
             Summary(icon("vault"), Span(name, cls="nm"), Span(str(root["count"]), cls="count")), body, open=True,
@@ -683,7 +712,7 @@ def build_app(
 
     @app.get("/wikis")
     def wikis(session) -> Any:
-        vaults = _vaults()
+        vaults = in_scope()
         trees = [vault_tree(name, vault) for name, vault in vaults.items()]
         total = sum(stats.tree(v)["count"] for v in vaults.values())
         search = Input(
@@ -716,7 +745,7 @@ def build_app(
 
     @app.get("/wikis/search")
     def wiki_search(session, q: str = "") -> Any:
-        vaults = _vaults()
+        vaults = in_scope()
         if not q.strip():
             return tuple(vault_tree(name, vault) for name, vault in vaults.items())
         results, total = [], 0
@@ -880,9 +909,10 @@ def build_app(
 
     @app.get("/health")
     async def health(session) -> Any:
-        sync_rows = stats.sync_health(log)
+        focus = scope()
+        sync_rows = stats.sync_health(log, vault=focus)
         week = clock.start_of(clock.days(7)[0])
-        client_rows = stats.clients(log)
+        client_rows = stats.clients(log, vault=focus)
         names: dict[str, str | None] = {}
         if client_names is not None:
             for row in client_rows:
@@ -926,7 +956,7 @@ def build_app(
                     for r in client_rows]),
         ), cls="scroll") if client_rows else empty("No clients have called the server yet.")
 
-        lat = stats.latency(log, week)
+        lat = stats.latency(log, week, vault=focus)
         latency_table = Div(Table(
             Thead(Tr(Th("Tool"), Th("Calls", cls="num"), Th("Median", cls="num"), Th("95th pct", cls="num"), Th("Slowest", cls="num"))),
             Tbody(*[Tr(Td(tool_label(r["tool"])), Td(str(r["count"]), cls="num"),
@@ -1007,3 +1037,13 @@ def _vaults() -> dict[str, Any]:
         return configured_vaults()
     except VaultError:
         return {}
+
+
+def where(vault: Any) -> str:
+    """Where a vault lives, for the switcher: the embedding app's label, else its remote."""
+    if vault.label:
+        return vault.label
+    if not vault.remote:
+        return "Local folder"
+    found = re.match(r"^(?:https://github\.com/|git@github\.com:)([\w.-]+/[\w.-]+?)(?:\.git)?/?$", vault.remote)
+    return f"GitHub · {found.group(1)}" if found else "Git"

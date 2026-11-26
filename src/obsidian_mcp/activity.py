@@ -208,6 +208,19 @@ class ActivityLog:
             params.append(vault)
         return ("WHERE " + " AND ".join(clauses)) if clauses else "", tuple(params)
 
+    def rename_vault(self, old: str, new: str) -> None:
+        """Keep a renamed vault's history under its new name."""
+        with self._lock:
+            self._db.execute("UPDATE events SET vault = ? WHERE vault = ?", (new, old))
+            self._db.execute("UPDATE OR REPLACE snapshots SET vault = ? WHERE vault = ?", (new, old))
+
+    def forget_vault(self, name: str) -> None:
+        """Drop the history of a vault that was removed, so a later one of the same name
+        starts clean."""
+        with self._lock:
+            self._db.execute("DELETE FROM events WHERE vault = ?", (name,))
+            self._db.execute("DELETE FROM snapshots WHERE vault = ?", (name,))
+
     def snapshots(self, vault: str, limit: int = 120) -> list[dict[str, Any]]:
         rows = self.query(
             "SELECT * FROM snapshots WHERE vault = ? ORDER BY day DESC LIMIT ?", (vault, limit)

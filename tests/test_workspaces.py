@@ -289,7 +289,8 @@ def hosted_dashboard(world: dict[str, Any], menu: Any = None) -> Any:
     external = ExternalAuth(
         user=_viewer.get, login_url="/login", logout_url="/logout", csrf=lambda: "csrf-token",
         brand="Kintex", nav=(("Settings", "/settings"),), banner=lambda: Div("Finish setting up", id="setup"),
-        menu=menu or (lambda: ()),
+        menu=menu or (lambda: ()), vault_links=lambda: (("New knowledge base", "/kb/new"),),
+        vault_words=("knowledge base", "knowledge bases"),
     )
     # Any provider will do: the embedding app brings its own (the gateway uses AuthKit).
     return build_server(settings, workspaces=lambda token: None, dashboard_auth=external,
@@ -357,6 +358,50 @@ def test_an_embedding_app_can_serve_the_dashboard_at_its_own_path(world) -> None
     assert 'action="/logout"' in overview.text  # Sign out, in the account menu
     assert 'href="/alice/dash/setup">Setup<span class="badge ok">2/3</span></a>' in overview.text  # a badge
     assert '"/dash/' not in overview.text and '"/dash/' not in activity.text
+
+
+def test_the_switcher_shows_the_viewers_own_vaults_in_the_apps_words(world) -> None:
+    """Alice has two vaults, one described by the embedding app ("Hosted by Kintex"); the
+    switcher lists hers, in the app's words, with its links. Bob's switcher shows his one
+    vault, and naming Alice's other vault in his cookie changes nothing: the choice only
+    ever narrows what a viewer can already see."""
+    alice = world["spaces"]["alice"]
+    work = make_remote(world["tmp"], "alice-work", {"Plan.md": "# Plan\n"})
+    extra = Vault("work", world["tmp"] / "accounts" / "alice" / "work", str(work), label="Hosted by Kintex")
+    with use_workspace(Workspace(vaults={"work": extra})), use_vault("work"):
+        sync.ensure_clone()
+        sync.pull()
+    alice.vaults["work"] = extra
+    now = __import__("time").time()
+    alice.log.record(Event(ts=now, tool="read_note", kind="read", ok=True, vault="notes", path="Alice.md"))
+    alice.log.record(Event(ts=now, tool="read_note", kind="read", ok=True, vault="work", path="Plan.md"))
+
+    async def go() -> list[httpx2.Response]:
+        server = hosted_dashboard(world)
+        app = server.http_app(path="/mcp", stateless_http=True)
+        async with app.router.lifespan_context(app):
+            transport = httpx2.ASGITransport(app=Embed(app, world["spaces"]))
+            async with httpx2.AsyncClient(transport=transport, base_url=BASE_URL) as web:
+                mine = await web.get("/dash/activity", headers={"x-test-user": "alice"})
+                picked = await web.get("/dash/focus?vault=work&next=/dash/activity", headers={"x-test-user": "alice"})
+                focused = await web.get("/dash/activity", headers={"x-test-user": "alice"})
+                bob_cookie = {"x-test-user": "bob", "cookie": "dash_vault=work"}
+                bobs = await web.get("/dash/activity", headers=bob_cookie)
+                bob_pick = await web.get("/dash/focus?vault=work", headers={"x-test-user": "bob"})
+                return [mine, picked, focused, bobs, bob_pick]
+
+    mine, picked, focused, bobs, bob_pick = run(go())
+    header = mine.text[mine.text.index("<header"):mine.text.index("</header>")]
+    assert "All knowledge bases" in header and "Choose a knowledge base" in header and "All vaults" not in header
+    assert "<small>Hosted by Kintex</small>" in header and '<a href="/kb/new">New knowledge base</a>' in header
+    assert "Alice.md" in mine.text and "Plan.md" in mine.text
+    assert picked.status_code == 303 and "dash_vault=work" in picked.headers["set-cookie"]
+    assert "Plan.md" in focused.text and "Alice.md" not in focused.text
+    # Bob: his own vault only, whatever his cookie says; and he can't pick Alice's.
+    bob_header = bobs.text[bobs.text.index("<header"):bobs.text.index("</header>")]
+    assert '<span class="cur">notes</span>' in bob_header and "Hosted by Kintex" not in bob_header
+    assert "Plan" not in bobs.text and "Alice" not in bobs.text
+    assert "max-age=0" in bob_pick.headers["set-cookie"].lower()
 
 
 def test_hosted_dashboard_shows_only_the_viewers_workspace(world) -> None:

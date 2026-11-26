@@ -2,6 +2,9 @@
 
 Plain Python with no web code, so it can be tested on its own. Times are Unix
 timestamps; days are calendar days in the configured time zone.
+
+Most functions take `vault`: the one vault the viewer chose in the header's switcher,
+whose numbers alone they then count, or None for all of them.
 """
 
 from __future__ import annotations
@@ -59,17 +62,23 @@ def vault_names() -> list[str]:
         return []
 
 
+def _only(vault: str | None) -> tuple[str, tuple[Any, ...]]:
+    """The SQL condition (and its parameter) keeping one vault's events, or nothing."""
+    return (" AND vault = ?", (vault,)) if vault else ("", ())
+
+
 # -- activity --------------------------------------------------------------------------
 
 
-def daily_activity(log: ActivityLog, clock: Clock, days: int = 30) -> list[dict[str, Any]]:
+def daily_activity(log: ActivityLog, clock: Clock, days: int = 30, vault: str | None = None) -> list[dict[str, Any]]:
     """Per day: Claude's reads and errors (activity log), Claude's commits and device
     commits (git history, so it reaches back before the log existed)."""
     window = clock.days(days)
     since = clock.start_of(window[0])
     rows = {d: {"day": d, "reads": 0, "writes": 0, "errors": 0, "claude_commits": 0, "device_commits": 0}
             for d in window}
-    for event in log.query("SELECT ts, kind, ok FROM events WHERE ts >= ?", (since,)):
+    where, params = _only(vault)
+    for event in log.query(f"SELECT ts, kind, ok FROM events WHERE ts >= ?{where}", (since, *params)):
         row = rows.get(clock.day(event["ts"]))
         if row is None:
             continue
@@ -79,7 +88,7 @@ def daily_activity(log: ActivityLog, clock: Clock, days: int = 30) -> list[dict[
             row["writes"] += 1
         if not event["ok"]:
             row["errors"] += 1
-    for name in vault_names():
+    for name in [vault] if vault else vault_names():
         try:
             history = gitstats.commits(name, days + 1)
         except VaultError:
@@ -107,12 +116,13 @@ def tiles(daily: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def errors_by_type(log: ActivityLog, since: float) -> list[dict[str, Any]]:
+def errors_by_type(log: ActivityLog, since: float, vault: str | None = None) -> list[dict[str, Any]]:
     groups: dict[str, dict[str, Any]] = {}
+    where, params = _only(vault)
     for event in log.query(
         "SELECT ts, tool, error_type, error, sync, ok FROM events "
-        "WHERE ts >= ? AND (ok = 0 OR sync LIKE 'error%') ORDER BY ts DESC",
-        (since,),
+        f"WHERE ts >= ? AND (ok = 0 OR sync LIKE 'error%'){where} ORDER BY ts DESC",
+        (since, *params),
     ):
         kind = event["error_type"] if not event["ok"] else "SyncError"
         group = groups.setdefault(kind or "Error", {
@@ -123,10 +133,11 @@ def errors_by_type(log: ActivityLog, since: float) -> list[dict[str, Any]]:
     return sorted(groups.values(), key=lambda g: (-g["count"], -g["last_ts"]))
 
 
-def latency(log: ActivityLog, since: float) -> list[dict[str, Any]]:
+def latency(log: ActivityLog, since: float, vault: str | None = None) -> list[dict[str, Any]]:
     by_tool: dict[str, list[int]] = defaultdict(list)
+    where, params = _only(vault)
     for event in log.query(
-        "SELECT tool, duration_ms FROM events WHERE ts >= ? AND duration_ms IS NOT NULL", (since,)
+        f"SELECT tool, duration_ms FROM events WHERE ts >= ? AND duration_ms IS NOT NULL{where}", (since, *params)
     ):
         by_tool[event["tool"]].append(event["duration_ms"])
     rows = []
@@ -138,31 +149,33 @@ def latency(log: ActivityLog, since: float) -> list[dict[str, Any]]:
     return sorted(rows, key=lambda r: -r["count"])
 
 
-def tool_counts(log: ActivityLog, since: float) -> list[dict[str, Any]]:
+def tool_counts(log: ActivityLog, since: float, vault: str | None = None) -> list[dict[str, Any]]:
+    where, params = _only(vault)
     return log.query(
-        "SELECT tool, kind, COUNT(*) AS n, SUM(ok = 0) AS errors FROM events WHERE ts >= ? "
+        f"SELECT tool, kind, COUNT(*) AS n, SUM(ok = 0) AS errors FROM events WHERE ts >= ?{where} "
         "GROUP BY tool, kind ORDER BY n DESC",
-        (since,),
+        (since, *params),
     )
 
 
 # -- notes -----------------------------------------------------------------------------
 
 
-def top_read(log: ActivityLog, since: float, limit: int = 10) -> list[dict[str, Any]]:
+def top_read(log: ActivityLog, since: float, limit: int = 10, vault: str | None = None) -> list[dict[str, Any]]:
     marks = ",".join("?" * len(NOTE_READ_TOOLS))
+    where, params = _only(vault)
     return log.query(
         f"SELECT vault, path, COUNT(*) AS n, MAX(ts) AS last_ts FROM events "
-        f"WHERE kind = 'read' AND ok = 1 AND path IS NOT NULL AND ts >= ? AND tool IN ({marks}) "
+        f"WHERE kind = 'read' AND ok = 1 AND path IS NOT NULL AND ts >= ? AND tool IN ({marks}){where} "
         f"GROUP BY vault, path ORDER BY n DESC, last_ts DESC LIMIT ?",
-        (since, *NOTE_READ_TOOLS, limit),
+        (since, *NOTE_READ_TOOLS, *params, limit),
     )
 
 
-def top_changed(days: int, limit: int = 10) -> list[dict[str, Any]]:
+def top_changed(days: int, limit: int = 10, vault: str | None = None) -> list[dict[str, Any]]:
     counts: Counter[tuple[str, str]] = Counter()
     by_claude: Counter[tuple[str, str]] = Counter()
-    for name in vault_names():
+    for name in [vault] if vault else vault_names():
         try:
             history = gitstats.commits(name, days)
         except VaultError:
@@ -382,7 +395,7 @@ def read_counts(log: ActivityLog, since: float) -> dict[tuple[str, str], int]:
 # -- health ----------------------------------------------------------------------------
 
 
-def sync_health(log: ActivityLog) -> list[dict[str, Any]]:
+def sync_health(log: ActivityLog, vault: str | None = None) -> list[dict[str, Any]]:
     """Per vault: last pull and push, current errors, commits waiting to be pushed."""
     status = sync.status_snapshot()
     rows = []
@@ -390,10 +403,12 @@ def sync_health(log: ActivityLog) -> list[dict[str, Any]]:
         vaults = configured_vaults()
     except VaultError:
         return []
-    for name, vault in vaults.items():
-        entry = status.get(vault.key, {})
+    if vault:
+        vaults = {vault: vaults[vault]} if vault in vaults else {}
+    for name, v in vaults.items():
+        entry = status.get(v.key, {})
         counts = None
-        if vault.remote:
+        if v.remote:
             try:
                 with use_vault(name):
                     counts = sync.ahead_behind()
@@ -403,7 +418,7 @@ def sync_health(log: ActivityLog) -> list[dict[str, Any]]:
         pull_error = entry.get("pull_error") if entry.get("pull_error_at", 0) > (last_pull or 0) else None
         push_error = entry.get("push_error") if entry.get("push_error_at", 0) > (last_push or 0) else None
         ahead = counts[0] if counts else 0
-        if not vault.remote:
+        if not v.remote:
             state = "local"
         elif pull_error or push_error:
             state = "error"
@@ -417,7 +432,7 @@ def sync_health(log: ActivityLog) -> list[dict[str, Any]]:
             (name,),
         )
         rows.append({
-            "vault": name, "remote": bool(vault.remote), "state": state,
+            "vault": name, "remote": bool(v.remote), "state": state,
             "last_pull": last_pull, "last_push": last_push,
             "pull_error": pull_error, "pull_error_at": entry.get("pull_error_at"),
             "push_error": push_error, "push_error_at": entry.get("push_error_at"),
@@ -427,8 +442,10 @@ def sync_health(log: ActivityLog) -> list[dict[str, Any]]:
     return rows
 
 
-def clients(log: ActivityLog) -> list[dict[str, Any]]:
+def clients(log: ActivityLog, vault: str | None = None) -> list[dict[str, Any]]:
+    where, params = _only(vault)
     return log.query(
         "SELECT client_id, user, COUNT(*) AS n, MIN(ts) AS first_ts, MAX(ts) AS last_ts "
-        "FROM events WHERE client_id IS NOT NULL GROUP BY client_id, user ORDER BY last_ts DESC"
+        f"FROM events WHERE client_id IS NOT NULL{where} GROUP BY client_id, user ORDER BY last_ts DESC",
+        params,
     )

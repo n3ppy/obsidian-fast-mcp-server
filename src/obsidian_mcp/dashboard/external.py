@@ -33,3 +33,7 @@ class ExternalAuth:
     banner: Callable[[], Any] | None = None  # shown at the top of the Overview, or None
     masthead: Any = None  # shown instead of the brand name at the top left (a logo, a link home)
     menu: Callable[[], tuple[tuple[Any, ...], ...]] = _no_items  # the account menu's pages: (label, href[, badge])
+    # The vault switcher's own links, below the vaults: (label, href), e.g. "New knowledge
+    # base". With any, the switcher shows even for a single vault.
+    vault_links: Callable[[], tuple[tuple[str, str], ...]] = _no_items
+    vault_words: tuple[str, str] = ("vault", "vaults")  # what the switcher calls them
