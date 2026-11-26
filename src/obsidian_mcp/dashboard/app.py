@@ -523,48 +523,35 @@ def build_app(
                                           aria="Notes over time"))
 
     def all_section() -> list[Any]:
-        """Every vault in scope, added up: the totals, a row each (its name opens it on its
-        own), and the notes over time of all of them together."""
+        """Every vault in scope in one table: a row each, then their total, in even columns
+        (on phones, notes and size only). A name opens that vault alone, with its growth
+        and link health. Then the notes of all of them over time."""
         vaults = in_scope()
-        keys = ("notes", "words", "folders", "attachments", "pdfs", "bytes")
+        keys = ("notes", "words", "attachments", "bytes")
         total = dict.fromkeys(keys, 0)
         rows = []
         by_day: dict[str, int] = {}
+
+        def cells(size: dict[str, Any]) -> tuple[Any, ...]:
+            return (Td(f"{size['notes']:,}", cls="num"), Td(f"{size['words']:,}", cls="num opt"),
+                    Td(f"{size['attachments']:,}", cls="num opt"), Td(bytes_label(size["bytes"]), cls="num"))
+
         for name, vault in vaults.items():
             size = stats.vault_size(vault)
             for key in keys:
                 total[key] += size[key]
-            try:
-                links_ = stats.link_health(name)
-                health = " · ".join(part for part in (
-                    plural(links_["orphan_count"], "orphan") if links_["orphan_count"] else "",
-                    plural(links_["broken_count"], "broken link") if links_["broken_count"] else "",
-                ) if part) or "all linked"
-            except VaultError:
-                health = "—"
             for snap in log.snapshots(name, 90):
                 by_day[snap["day"]] = by_day.get(snap["day"], 0) + snap["notes"]
             focus = f"{base()}/focus?vault={quote(name, safe='')}&next={quote(base() + '/insights', safe='/')}"
-            rows.append(Tr(Td(A(name, href=focus, title=f"Show {name} alone"), Div(where(vault), cls="muted small")),
-                           Td(f"{size['notes']:,}", cls="num"), Td(f"{size['words']:,}", cls="num"),
-                           Td(f"{size['attachments']:,}", cls="num"), Td(bytes_label(size["bytes"]), cls="num"),
-                           Td(health, cls="small muted")))
-        rows.append(Tr(Td(B("Total")), Td(B(f"{total['notes']:,}"), cls="num"), Td(B(f"{total['words']:,}"), cls="num"),
-                       Td(B(f"{total['attachments']:,}"), cls="num"), Td(B(bytes_label(total["bytes"])), cls="num"),
-                       Td(""), cls="total"))
+            rows.append(Tr(Td(A(name, href=focus, title=f"{where(vault)}. Show it alone.")), *cells(size)))
+        rows.append(Tr(Td("Total"), *cells(total), cls="total"))
         snaps = [{"day": day, "notes": n} for day, n in sorted(by_day.items())]
         return [Section(
-            H2(f"All {many}", Small(plural(len(vaults), one, many))),
-            Div(*[Div(Tag(v), Span(k)) for k, v in (
-                ("notes", f"{total['notes']:,}"), ("words", f"{total['words']:,}"),
-                ("folders", f"{total['folders']:,}"), ("attachments", f"{total['attachments']:,}"),
-                ("PDFs", f"{total['pdfs']:,}"), ("on disk", bytes_label(total["bytes"])),
-            )], cls="stats"),
-            Div(Table(Thead(Tr(Th(cap(one)), Th("Notes", cls="num"), Th("Words", cls="num"),
-                               Th("Attachments", cls="num"), Th("On disk", cls="num"), Th("Links"))),
-                      Tbody(*rows), cls="sizes"), cls="scroll", style="margin-top:16px"),
-            P(f"Click a {one} for its growth and link health in detail.", cls="muted small"),
-            H2("Notes over time", Small(f"all {many}"), style="margin-top:16px"), growth_chart(snaps),
+            H2(f"All {many}", Small("pick one to see it alone")),
+            Div(Table(Thead(Tr(Th(cap(one)), Th("Notes", cls="num"), Th("Words", cls="num opt"),
+                               Th("Attachments", cls="num opt"), Th("On disk", cls="num"))),
+                      Tbody(*rows), cls="sizes"), cls="scroll"),
+            H2("Notes over time", Small(f"all {many}"), style="margin-top:20px"), growth_chart(snaps),
         )]
 
     def top_notes(days: int) -> list[Any]:

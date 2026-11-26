@@ -528,9 +528,11 @@ def test_the_switcher_narrows_every_page_to_one_vault(vault_env, tmp_path: Path)
             # Insights adds all of them up first: the totals, a row each, then the most read.
             insights = (await web.get("/dash/insights")).text
             summary = insights[insights.index("All vaults<small>"):insights.index("Most read by Claude")]
-            assert "<small>2 vaults</small>" in summary and '<tr class="total">' in summary
+            assert "<small>pick one to see it alone</small>" in summary and 'class="sizes"' in summary
             assert 'href="/dash/focus?vault=work&amp;next=/dash/insights"' in summary and ">principal</a>" in summary
-            assert "<b>3</b><span>notes</span>" in summary  # principal's 2 and work's 1
+            total = summary[summary.index('<tr class="total">'):]
+            assert re.search(r'<td>Total</td>\s*<td class="num">3</td>', total)  # principal's 2 and work's 1
+            assert 'class="stats"' not in summary  # the totals once, in the table, not as tiles too
             assert "Vault: principal" not in insights and "Vault: work" not in insights  # no one vault's section
             most_read = insights[insights.index("Most read by Claude"):insights.index("Most changed")]
             assert "Plan.md</a><small class=\"muted\"> · work</small>" in most_read  # which one each note is in

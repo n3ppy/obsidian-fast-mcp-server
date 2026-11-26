@@ -172,7 +172,11 @@ tr:last-child td, tbody tr:last-child th { border-bottom:0; }
 td.path { font-family:var(--mono); font-size:13px; overflow-wrap:anywhere; }
 td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }  /* numbers line up under their heading */
 td.when { white-space:nowrap; color:var(--muted); }
-tr.total td { border-top:2px solid var(--line); }  /* a table's totals, under its rows */
+tr.total td { border-top:2px solid var(--line); font-weight:600; }  /* a table's totals, under its rows */
+/* the vaults side by side (Insights, all of them): fixed, even columns, one line a row */
+table.sizes { table-layout:fixed; }
+table.sizes th:first-child, table.sizes td:first-child { width:40%; overflow:hidden; text-overflow:ellipsis;
+  white-space:nowrap; }
 .badge { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
 .badge.ok { background:var(--ok-bg); color:var(--ok); } .badge.err { background:var(--err-bg); color:var(--err); }
 .badge.warn { background:var(--warn-bg); color:var(--warn); }
@@ -270,6 +274,9 @@ li.f .gh:hover { color:var(--fg); background:var(--line); }
   /* phones: logo and sign-out on one row, the tabs scroll underneath, and the header scrolls away */
   header { position:static; grid-template-columns:minmax(0, 1fr) auto; }
   .vaults .cur { max-width:12ch; }
+  table.sizes .opt { display:none; }  /* phones: a vault's notes and size only, its name taking the rest */
+  table.sizes th:first-child, table.sizes td:first-child { width:auto; }
+  table.sizes th.num { width:84px; }
   header nav { grid-column:1 / -1; grid-row:2; justify-self:stretch; flex-wrap:nowrap; overflow-x:auto; margin:0 -4px; }
   nav a { white-space:nowrap; }
 }

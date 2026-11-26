@@ -397,7 +397,7 @@ def test_the_switcher_shows_the_viewers_own_vaults_in_the_apps_words(world) -> N
     mine, picked, focused, bobs, bob_pick, insights, health = run(go())
     header = mine.text[mine.text.index("<header"):mine.text.index("</header>")]
     # One word throughout: the app's ("knowledge base"), never "vault", on the pages too.
-    assert "All knowledge bases<small>2 knowledge bases</small>" in insights.text
+    assert "All knowledge bases<small>pick one to see it alone</small>" in insights.text
     assert "<th>Knowledge base</th>" in insights.text and "<th>Knowledge base</th>" in health.text
     assert "<th>Knowledge bases</th>" in health.text and ">Vault<" not in health.text
     assert "Vault" not in insights.text and "Listed knowledge bases" in mine.text
