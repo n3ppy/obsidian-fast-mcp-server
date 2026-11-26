@@ -43,8 +43,8 @@ from ..vault import VaultError, configured_vaults, use_vault
 from . import assets, charts, stats, viewer
 from .external import ExternalAuth
 from .ui import (
-    BASE, FOCUS_COOKIE, THEME_COOKIE, THEMES, Fmt, ThemeMiddleware, base, bytes_label, empty, focused, head,
-    login_page, page, plural, safe_next, theme_attrs, tool_label,
+    BASE, FOCUS_COOKIE, THEME_COOKIE, THEMES, VAULT_WORDS, Fmt, ThemeMiddleware, base, bytes_label, cap, empty, focused,
+    head, login_page, page, plural, safe_next, theme_attrs, tool_label,
 )
 
 GITHUB_AUTHORIZE = "https://github.com/login/oauth/authorize"
@@ -156,6 +156,12 @@ def build_app(
     log = ScopedLog(log)  # the viewer's own log when the embedding app chose one
     github = settings.auth == "github" and external is None
     brand = external.brand if external else "Vault dashboard"
+    # What the pages call a vault: "vault" here, an embedding app's own word ("knowledge base").
+    words = external.vault_words if external is not None else VAULT_WORDS
+    one, many = words
+
+    def tool_name(tool: str) -> str:
+        return tool_label(tool, words)
     login_target = external.login_url if external else f"{BASE}/login"
 
     # -- session and access ----------------------------------------------------------
@@ -238,7 +244,7 @@ def build_app(
     # -- sign in ---------------------------------------------------------------------
 
     def login_form(error: str | None = None, status: int = 200) -> Any:
-        intro = P("See what Claude has done in your vault.", cls="muted")
+        intro = P(f"See what Claude has done in your {one}.", cls="muted")
         if github:
             body = [H1("Vault dashboard"), intro]
             if error:
@@ -373,7 +379,9 @@ def build_app(
         return path
 
     def path_cell(vault: str | None, path: str | None) -> Any:
-        return Td(path_link(vault, path), cls="path")
+        """A note in a table, and which vault it's in when the page shows several."""
+        where_from = Small(f" · {vault}", cls="muted") if vault and scope() is None and len(_vaults()) > 1 else ""
+        return Td(path_link(vault, path), where_from, cls="path")
 
     def commit_link(vault: str | None, sha: str | None) -> Any:
         if not sha:
@@ -398,7 +406,7 @@ def build_app(
                 detail = Div(e["error"], cls="err-text")
             elif (e.get("sync") or "").startswith("error"):
                 detail = Div(e["sync"][7:], cls="err-text")
-            what = [tool_label(e["tool"])]
+            what = [tool_name(e["tool"])]
             if multi and e.get("vault"):
                 what.append(Small(f" · {e['vault']}", cls="muted"))
             extra = ""
@@ -420,7 +428,7 @@ def build_app(
 
     def event_table(events: list[dict], expandable: bool = False) -> Any:
         if not events:
-            return empty("Nothing yet. Activity appears here as soon as Claude uses the vault.")
+            return empty("Nothing yet. Activity appears here as soon as Claude reads or writes a note.")
         return Div(Table(
             Thead(Tr(Th("When"), Th("What"), Th("Result"), Th("Note"), Th("Commit"))),
             Tbody(*event_rows(events, expandable)),
@@ -501,9 +509,63 @@ def build_app(
 
     @app.get("/insights")
     def insights(session, days: int = 30) -> Any:
+        """Size, growth and link health of what's in scope, first: all of several vaults as
+        one summary, or the one vault on screen in detail. Then the most read and changed."""
         days = days if days in (7, 30, 90) else 30
         stats.ensure_snapshots(log, clock)
-        return shell("Insights", "Insights", session, *top_notes(days), *vault_sections())
+        sizes = all_section() if len(in_scope()) > 1 else vault_sections()
+        return shell("Insights", "Insights", session, *sizes, *top_notes(days))
+
+    def growth_chart(snaps: list[dict[str, Any]]) -> Any:
+        if len(snaps) < 2:
+            return empty("Growth appears here after a second day of snapshots.")
+        return NotStr(charts.stacked_bars(snaps, [("notes", "Notes")], label_key="day", label_fmt=lambda d: d[5:],
+                                          aria="Notes over time"))
+
+    def all_section() -> list[Any]:
+        """Every vault in scope, added up: the totals, a row each (its name opens it on its
+        own), and the notes over time of all of them together."""
+        vaults = in_scope()
+        keys = ("notes", "words", "folders", "attachments", "pdfs", "bytes")
+        total = dict.fromkeys(keys, 0)
+        rows = []
+        by_day: dict[str, int] = {}
+        for name, vault in vaults.items():
+            size = stats.vault_size(vault)
+            for key in keys:
+                total[key] += size[key]
+            try:
+                links_ = stats.link_health(name)
+                health = " · ".join(part for part in (
+                    plural(links_["orphan_count"], "orphan") if links_["orphan_count"] else "",
+                    plural(links_["broken_count"], "broken link") if links_["broken_count"] else "",
+                ) if part) or "all linked"
+            except VaultError:
+                health = "—"
+            for snap in log.snapshots(name, 90):
+                by_day[snap["day"]] = by_day.get(snap["day"], 0) + snap["notes"]
+            focus = f"{base()}/focus?vault={quote(name, safe='')}&next={quote(base() + '/insights', safe='/')}"
+            rows.append(Tr(Td(A(name, href=focus, title=f"Show {name} alone"), Div(where(vault), cls="muted small")),
+                           Td(f"{size['notes']:,}", cls="num"), Td(f"{size['words']:,}", cls="num"),
+                           Td(f"{size['attachments']:,}", cls="num"), Td(bytes_label(size["bytes"]), cls="num"),
+                           Td(health, cls="small muted")))
+        rows.append(Tr(Td(B("Total")), Td(B(f"{total['notes']:,}"), cls="num"), Td(B(f"{total['words']:,}"), cls="num"),
+                       Td(B(f"{total['attachments']:,}"), cls="num"), Td(B(bytes_label(total["bytes"])), cls="num"),
+                       Td(""), cls="total"))
+        snaps = [{"day": day, "notes": n} for day, n in sorted(by_day.items())]
+        return [Section(
+            H2(f"All {many}", Small(plural(len(vaults), one, many))),
+            Div(*[Div(Tag(v), Span(k)) for k, v in (
+                ("notes", f"{total['notes']:,}"), ("words", f"{total['words']:,}"),
+                ("folders", f"{total['folders']:,}"), ("attachments", f"{total['attachments']:,}"),
+                ("PDFs", f"{total['pdfs']:,}"), ("on disk", bytes_label(total["bytes"])),
+            )], cls="stats"),
+            Div(Table(Thead(Tr(Th(cap(one)), Th("Notes", cls="num"), Th("Words", cls="num"),
+                               Th("Attachments", cls="num"), Th("On disk", cls="num"), Th("Links"))),
+                      Tbody(*rows), cls="sizes"), cls="scroll", style="margin-top:16px"),
+            P(f"Click a {one} for its growth and link health in detail.", cls="muted small"),
+            H2("Notes over time", Small(f"all {many}"), style="margin-top:16px"), growth_chart(snaps),
+        )]
 
     def top_notes(days: int) -> list[Any]:
         since = time.time() - days * 86400
@@ -536,16 +598,13 @@ def build_app(
                 links_ = stats.link_health(name)
             except VaultError:
                 continue
-            snaps = log.snapshots(name, 90)
-            growth = (NotStr(charts.stacked_bars(snaps, [("notes", "Notes")], label_key="day",
-                                                 label_fmt=lambda d: d[5:], aria="Notes over time"))
-                      if len(snaps) > 1 else empty("Growth appears here after a second day of snapshots."))
+            growth = growth_chart(log.snapshots(name, 90))
             summary = " · ".join([
                 plural(links_["orphan_count"], "orphan"), plural(links_["broken_count"], "broken link"),
                 plural(links_["untagged_count"], "untagged note"),
             ])
             sections.append(Section(
-                H2(f"Vault: {name}" if len(_vaults()) > 1 else "Vault"),
+                H2(f"{cap(one)}: {name}" if len(_vaults()) > 1 else cap(one)),
                 Div(*[Div(Tag(v), Span(k)) for k, v in (
                     ("notes", f"{size['notes']:,}"), ("words", f"{size['words']:,}"),
                     ("folders", f"{size['folders']:,}"), ("attachments", f"{size['attachments']:,}"),
@@ -579,7 +638,7 @@ def build_app(
         return Div(Table(
             Thead(Tr(Th("Type"), Th("Count", cls="num"), Th("Last"), Th("Last message"))),
             Tbody(*[Tr(Td(e["type"]), Td(str(e["count"]), cls="num"),
-                       Td(f"{fmt.short(e['last_ts'])} · {tool_label(e['last_tool'])}", cls="when"),
+                       Td(f"{fmt.short(e['last_ts'])} · {tool_name(e['last_tool'])}", cls="when"),
                        Td(e["last_error"] or "", cls="path small")) for e in errors]),
         ), cls="scroll")
 
@@ -607,7 +666,7 @@ def build_app(
                    name="days", aria_label="Period"),
             Select(opt("", "Reads and changes", kind), opt("read", "Reads", kind), opt("write", "Changes", kind),
                    opt("sync", "Syncs", kind), name="kind", aria_label="Kind"),
-            Select(opt("", "All tools", tool), *[opt(t, tool_label(t), tool) for t in tools],
+            Select(opt("", "All tools", tool), *[opt(t, tool_name(t), tool) for t in tools],
                    name="tool", aria_label="Tool"),
             Input(type="search", name="q", value=q, placeholder="Path contains…", aria_label="Path contains"),
             Label(Input(type="checkbox", name="errors", value="1", checked=bool(errors)), " Errors only",
@@ -730,7 +789,7 @@ def build_app(
             NotStr(ICONS),
             Section(
                 Div(H2("Wikis", Small(plural(total, "file"))), search, cls="bar"),
-                Div(*trees, cls="tree", id="tree") if trees else empty("No vault is configured."),
+                Div(*trees, cls="tree", id="tree") if trees else empty(f"No {one} yet."),
                 legend,
             ),
         )
@@ -794,7 +853,7 @@ def build_app(
     @app.get("/wikis/note/{vault}")
     def wiki_note(session, vault: str, path: str = "") -> Any:
         if vault not in _vaults():
-            return gone(session, "Note not found", "There's no such vault here.")
+            return gone(session, "Note not found", f"There's no such {one} here.")
         with use_vault(vault):
             located = viewer.locate(path) if path.lower().endswith(".md") else None
             if located is None:
@@ -929,7 +988,7 @@ def build_app(
             return Span(label[1], cls=f"badge {label[0]}")
 
         sync_table = Div(Table(
-            Thead(Tr(Th("Vault"), Th("State"), Th("Last pull"), Th("Last push"), Th("Not pushed", cls="num"), Th("Not pulled", cls="num"))),
+            Thead(Tr(Th(cap(one)), Th("State"), Th("Last pull"), Th("Last push"), Th("Not pushed", cls="num"), Th("Not pulled", cls="num"))),
             Tbody(*[Tr(Td(h["vault"]), Td(sync_state(h)), Td(fmt.short(h["last_pull"]), cls="when"),
                        Td(fmt.short(h["last_push"]), cls="when"), Td(str(h["ahead"]), cls="num"),
                        Td(str(h["behind"]), cls="num")) for h in sync_rows]),
@@ -942,7 +1001,7 @@ def build_app(
         recent_errors = [e for h in sync_rows for e in h["recent_errors"]]
         recent_sync = Div(Table(
             Thead(Tr(Th("When"), Th("Tool"), Th("Note"), Th("Error"))),
-            Tbody(*[Tr(Td(fmt.short(e["ts"]), cls="when"), Td(tool_label(e["tool"])),
+            Tbody(*[Tr(Td(fmt.short(e["ts"]), cls="when"), Td(tool_name(e["tool"])),
                        Td(e["path"] or "—", cls="path"), Td((e["sync"] or "")[7:], cls="path small"))
                     for e in sorted(recent_errors, key=lambda e: -e["ts"])[:10]]),
         ), cls="scroll") if recent_errors else empty("No sync errors recorded.")
@@ -959,7 +1018,7 @@ def build_app(
         lat = stats.latency(log, week, vault=focus)
         latency_table = Div(Table(
             Thead(Tr(Th("Tool"), Th("Calls", cls="num"), Th("Median", cls="num"), Th("95th pct", cls="num"), Th("Slowest", cls="num"))),
-            Tbody(*[Tr(Td(tool_label(r["tool"])), Td(str(r["count"]), cls="num"),
+            Tbody(*[Tr(Td(tool_name(r["tool"])), Td(str(r["count"]), cls="num"),
                        Td(f"{r['median']} ms", cls="num"), Td(f"{r['p95']} ms", cls="num"),
                        Td(f"{r['max']} ms", cls="num")) for r in lat]),
         ), cls="scroll") if lat else empty("No calls in the last 7 days.")
@@ -970,7 +1029,7 @@ def build_app(
         info = [
             ("Version", __version__), ("Up since", f"{fmt.when(stats.STARTED_AT)} ({fmt.ago(stats.STARTED_AT)})"),
             ("Sign-in", sign_in),
-            ("Vaults", ", ".join(stats.vault_names()) or "none"),
+            (cap(many), ", ".join(stats.vault_names()) or "none"),
             ("Activity log", f"{rows['n']:,} events since {fmt.when(rows['first'])}, {bytes_label(log.size_bytes())}, "
                              f"kept {retention}"),
             ("Time zone", zone().key), ("Pull interval", f"{settings.pull_interval:g} s"),

@@ -525,6 +525,16 @@ def test_the_switcher_narrows_every_page_to_one_vault(vault_env, tmp_path: Path)
             assert "Inbox/Welcome.md" in both and "Plan.md" in both
             assert "<small class=\"muted\"> · work</small>" in both  # all of several: each row says where
 
+            # Insights adds all of them up first: the totals, a row each, then the most read.
+            insights = (await web.get("/dash/insights")).text
+            summary = insights[insights.index("All vaults<small>"):insights.index("Most read by Claude")]
+            assert "<small>2 vaults</small>" in summary and '<tr class="total">' in summary
+            assert 'href="/dash/focus?vault=work&amp;next=/dash/insights"' in summary and ">principal</a>" in summary
+            assert "<b>3</b><span>notes</span>" in summary  # principal's 2 and work's 1
+            assert "Vault: principal" not in insights and "Vault: work" not in insights  # no one vault's section
+            most_read = insights[insights.index("Most read by Claude"):insights.index("Most changed")]
+            assert "Plan.md</a><small class=\"muted\"> · work</small>" in most_read  # which one each note is in
+
             picked = await web.get("/dash/focus?vault=work&next=/dash/activity")
             assert picked.status_code == 303 and picked.headers["location"] == "/dash/activity"
             cookie = picked.headers["set-cookie"].lower()

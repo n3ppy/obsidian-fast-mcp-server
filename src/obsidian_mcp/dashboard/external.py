@@ -36,4 +36,4 @@ class ExternalAuth:
     # The vault switcher's own links, below the vaults: (label, href), e.g. "New knowledge
     # base". With any, the switcher shows even for a single vault.
     vault_links: Callable[[], tuple[tuple[str, str], ...]] = _no_items
-    vault_words: tuple[str, str] = ("vault", "vaults")  # what the switcher calls them
+    vault_words: tuple[str, str] = ("vault", "vaults")  # the app's word for a vault, on every page

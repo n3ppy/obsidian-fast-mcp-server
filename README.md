@@ -188,7 +188,8 @@ e.g. `Australia/Perth`, so days and times are yours).
 
 With several vaults (`OBSIDIAN_EXTRA_VAULTS`), a switcher next to the title picks one,
 and every tab then counts that vault alone; "All vaults" (the default) counts them
-together and says which vault each row is from. The choice is a cookie limited to `/dash`.
+together and says which vault each row is from, and Insights adds their sizes up, with a
+row each. The choice is a cookie limited to `/dash`.
 
 It's light by default; the sun/moon switch in the header turns on dark mode and remembers
 it (a `theme` cookie). No JavaScript is needed for the charts or the switches.
@@ -359,8 +360,8 @@ own log, and git work on different vaults doesn't wait on one lock. A vault's
 token), so the operator's `OBSIDIAN_GIT_TOKEN` never reaches another user's repository.
 With `dashboard_auth`, the dashboard trusts the app's sign-in and shows the workspace
 the app chose for the request. A vault's `label` says where it lives in the dashboard's
-vault switcher, and `ExternalAuth.vault_links` and `vault_words` add the app's own links
-to it and its word for a vault. `tests/test_workspaces.py` shows the whole setup.
+vault switcher, `ExternalAuth.vault_links` adds the app's own links to it, and
+`ExternalAuth.vault_words` is the app's word for a vault, used on every page. `tests/test_workspaces.py` shows the whole setup.
 
 ## Tools
 

@@ -31,7 +31,7 @@ HTMX_SRC = "https://cdn.jsdelivr.net/npm/htmx.org@2.0.7/dist/htmx.min.js"
 THEME_COOKIE = "theme"
 THEMES = ("light", "dark")
 FOCUS_COOKIE = "dash_vault"  # the vault the switcher picked; path-limited to the dashboard
-VAULT_WORDS = ("vault", "vaults")  # what the switcher calls them (an embedding app can say "knowledge base")
+VAULT_WORDS = ("vault", "vaults")  # what the pages call them (an embedding app can say "knowledge base")
 
 TOOL_LABELS = {
     "read_note": "Read note", "read_pdf": "Read PDF", "search_notes": "Searched",
@@ -76,17 +76,20 @@ CSS = THEME_CSS + """
 body { margin:0; background:var(--bg); color:var(--fg); font:15px/1.5 var(--sans); -webkit-font-smoothing:antialiased; }
 a { color:var(--accent); text-decoration:none; } a:hover { text-decoration:underline; }
 :focus-visible { outline:2px solid var(--accent); outline-offset:2px; }
-header { position:sticky; top:0; z-index:5; display:flex; flex-wrap:wrap; align-items:center; gap:8px 20px;
-  min-height:56px; padding:8px max(20px, calc((100% - 64rem) / 2 + 20px)); background:var(--bg);
-  border-bottom:1px solid var(--line); }
-header h1, header .brand { margin:0; font-size:16px; font-weight:600; letter-spacing:-.025em; }
+/* three columns: the brand and switcher, the tabs (centred, so they never move), the account */
+header { position:sticky; top:0; z-index:5; display:grid; grid-template-columns:minmax(0, 1fr) auto minmax(0, 1fr);
+  align-items:center; gap:8px 20px; min-height:56px; padding:8px max(20px, calc((100% - 64rem) / 2 + 20px));
+  background:var(--bg); border-bottom:1px solid var(--line); }
+header .left { display:flex; align-items:center; gap:8px; min-width:0; }
+header nav { justify-self:center; }
+header h1, header .brand { margin:0; font-size:16px; font-weight:600; letter-spacing:-.025em; flex:none; }
 header .brand a { display:flex; align-items:center; gap:8px; color:var(--fg); text-decoration:none; }
 header .brand svg { width:22px; height:22px; flex:none; }
 nav { display:flex; flex-wrap:wrap; gap:2px; }
 nav a { padding:5px 10px; border-radius:8px; color:var(--muted); font-size:14px; }
 nav a:hover { color:var(--fg); text-decoration:none; }
 nav a.on { color:var(--fg); background:var(--soft); font-weight:600; }
-header .right { margin-left:auto; display:flex; align-items:center; gap:12px; }
+header .right { justify-self:end; display:flex; align-items:center; gap:12px; }
 header form { margin:0; }
 .who { color:var(--muted); font-size:13px; }
 /* the account menu: the name opens a panel from the right (a <details>, no JavaScript) */
@@ -115,13 +118,13 @@ header form { margin:0; }
 .drawer-links form { margin:8px 0 0; padding-top:8px; border-top:1px solid var(--line); }
 .drawer-links button.link { color:var(--muted); }
 /* the vault switcher, after the brand ("kintex / notes"): a <details> menu, no JavaScript */
-.vaults { position:relative; min-width:0; margin-left:-12px; }
-.vaults > summary { list-style:none; display:flex; align-items:center; gap:6px; padding:5px 8px; border-radius:8px;
-  font-size:14px; font-weight:600; letter-spacing:-.01em; cursor:pointer; user-select:none; }
+.vaults { position:relative; min-width:0; }
+.vaults > summary { list-style:none; display:flex; align-items:center; gap:6px; min-width:0; padding:5px 8px;
+  border-radius:8px; font-size:14px; font-weight:600; letter-spacing:-.01em; cursor:pointer; user-select:none; }
 .vaults > summary::-webkit-details-marker { display:none; }
 .vaults > summary:hover { background:var(--soft); }
 .vaults .slash { color:var(--faint); font-weight:400; }
-.vaults .cur { max-width:22ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.vaults .cur { min-width:0; max-width:22ch; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
 .vaults[open] > summary::before { content:""; position:fixed; inset:0; z-index:20; cursor:default; }
 .vault-menu { position:absolute; top:calc(100% + 6px); left:0; z-index:21; width:max-content; min-width:240px;
   max-width:min(340px, 86vw); padding:6px; background:var(--card); border:1px solid var(--line); border-radius:12px;
@@ -169,6 +172,7 @@ tr:last-child td, tbody tr:last-child th { border-bottom:0; }
 td.path { font-family:var(--mono); font-size:13px; overflow-wrap:anywhere; }
 td.num, th.num { text-align:right; font-variant-numeric:tabular-nums; white-space:nowrap; }  /* numbers line up under their heading */
 td.when { white-space:nowrap; color:var(--muted); }
+tr.total td { border-top:2px solid var(--line); }  /* a table's totals, under its rows */
 .badge { display:inline-block; padding:1px 9px; border-radius:999px; font-size:12px; font-weight:600; white-space:nowrap; }
 .badge.ok { background:var(--ok-bg); color:var(--ok); } .badge.err { background:var(--err-bg); color:var(--err); }
 .badge.warn { background:var(--warn-bg); color:var(--warn); }
@@ -264,9 +268,9 @@ li.f .gh:hover { color:var(--fg); background:var(--line); }
 @media (max-width:640px) {
   .meta .reads { display:none; } .file .dir { display:none; } header .who { display:none; }
   /* phones: logo and sign-out on one row, the tabs scroll underneath, and the header scrolls away */
-  header { position:static; }
+  header { position:static; grid-template-columns:minmax(0, 1fr) auto; }
   .vaults .cur { max-width:12ch; }
-  header nav { order:3; flex-basis:100%; flex-wrap:nowrap; overflow-x:auto; margin:0 -4px; }
+  header nav { grid-column:1 / -1; grid-row:2; justify-self:stretch; flex-wrap:nowrap; overflow-x:auto; margin:0 -4px; }
   nav a { white-space:nowrap; }
 }
 .login { min-height:100vh; display:grid; place-items:center; padding:16px; }
@@ -456,9 +460,9 @@ def page(
             method="post", action=logout_action or f"{here}/logout",
         )
         top = Div(masthead, cls="brand") if masthead is not None else H1(brand)
-        switcher = vault_switcher(vaults, vault_links, vault_words)
+        left = Div(top, vault_switcher(vaults, vault_links, vault_words), cls="left")
         right = Div(theme_toggle(), account_menu(user, menu, logout, active), cls="right")
-        return document(f"{title} · {brand}", Body(Header(top, switcher, Nav(*links), right), Main(*content)),
+        return document(f"{title} · {brand}", Body(Header(left, Nav(*links), right), Main(*content)),
                         extra_css=extra_css)
     finally:
         if token is not None:
@@ -512,8 +516,18 @@ class Fmt:
         return f"{days} day{'s' if days != 1 else ''} ago"
 
 
-def tool_label(tool: str) -> str:
+def tool_label(tool: str, words: tuple[str, str] = VAULT_WORDS) -> str:
+    """How the dashboard names a tool call; the two about vaults use `words` for them."""
+    if tool == "list_vaults":
+        return f"Listed {words[1]}"
+    if tool == "vault_overview":
+        return f"{cap(words[0])} overview"
     return TOOL_LABELS.get(tool, tool)
+
+
+def cap(text: str) -> str:
+    """The first letter in capitals ("knowledge base" → "Knowledge base")."""
+    return text[:1].upper() + text[1:]
 
 
 def plural(n: int, word: str, many: str | None = None) -> str:

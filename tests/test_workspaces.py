@@ -375,6 +375,7 @@ def test_the_switcher_shows_the_viewers_own_vaults_in_the_apps_words(world) -> N
     now = __import__("time").time()
     alice.log.record(Event(ts=now, tool="read_note", kind="read", ok=True, vault="notes", path="Alice.md"))
     alice.log.record(Event(ts=now, tool="read_note", kind="read", ok=True, vault="work", path="Plan.md"))
+    alice.log.record(Event(ts=now, tool="list_vaults", kind="read", ok=True))
 
     async def go() -> list[httpx2.Response]:
         server = hosted_dashboard(world)
@@ -388,10 +389,18 @@ def test_the_switcher_shows_the_viewers_own_vaults_in_the_apps_words(world) -> N
                 bob_cookie = {"x-test-user": "bob", "cookie": "dash_vault=work"}
                 bobs = await web.get("/dash/activity", headers=bob_cookie)
                 bob_pick = await web.get("/dash/focus?vault=work", headers={"x-test-user": "bob"})
-                return [mine, picked, focused, bobs, bob_pick]
+                await web.get("/dash/focus?vault=", headers={"x-test-user": "alice"})
+                insights = await web.get("/dash/insights", headers={"x-test-user": "alice"})
+                health = await web.get("/dash/health", headers={"x-test-user": "alice"})
+                return [mine, picked, focused, bobs, bob_pick, insights, health]
 
-    mine, picked, focused, bobs, bob_pick = run(go())
+    mine, picked, focused, bobs, bob_pick, insights, health = run(go())
     header = mine.text[mine.text.index("<header"):mine.text.index("</header>")]
+    # One word throughout: the app's ("knowledge base"), never "vault", on the pages too.
+    assert "All knowledge bases<small>2 knowledge bases</small>" in insights.text
+    assert "<th>Knowledge base</th>" in insights.text and "<th>Knowledge base</th>" in health.text
+    assert "<th>Knowledge bases</th>" in health.text and ">Vault<" not in health.text
+    assert "Vault" not in insights.text and "Listed knowledge bases" in mine.text
     assert "All knowledge bases" in header and "Choose a knowledge base" in header and "All vaults" not in header
     assert "<small>Hosted by Kintex</small>" in header and '<a href="/kb/new">New knowledge base</a>' in header
     assert "Alice.md" in mine.text and "Plan.md" in mine.text
