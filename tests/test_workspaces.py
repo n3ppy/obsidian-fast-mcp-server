@@ -279,7 +279,7 @@ class Embed:
             _viewer.reset(token)
 
 
-def hosted_dashboard(world: dict[str, Any], menu: Any = None) -> Any:
+def hosted_dashboard(world: dict[str, Any], menu: Any = None, **hooks: Any) -> Any:
     from fasthtml.common import Div
 
     from obsidian_mcp.github_auth import StaticTokenVerifier
@@ -290,7 +290,7 @@ def hosted_dashboard(world: dict[str, Any], menu: Any = None) -> Any:
         user=_viewer.get, login_url="/login", logout_url="/logout", csrf=lambda: "csrf-token",
         brand="Kintex", nav=(("Settings", "/settings"),), banner=lambda: Div("Finish setting up", id="setup"),
         menu=menu or (lambda: ()), vault_links=lambda: (("New knowledge base", "/kb/new"),),
-        vault_words=("knowledge base", "knowledge bases"),
+        vault_words=("knowledge base", "knowledge bases"), **hooks,
     )
     # Any provider will do: the embedding app brings its own (the gateway uses AuthKit).
     return build_server(settings, workspaces=lambda token: None, dashboard_auth=external,
@@ -358,6 +358,32 @@ def test_an_embedding_app_can_serve_the_dashboard_at_its_own_path(world) -> None
     assert 'action="/logout"' in overview.text  # Sign out, in the account menu
     assert 'href="/alice/dash/setup">Setup<span class="badge ok">2/3</span></a>' in overview.text  # a badge
     assert '"/dash/' not in overview.text and '"/dash/' not in activity.text
+
+
+def test_an_embedding_app_adds_tabs_and_parts_of_a_note_page(world) -> None:
+    """Its tabs sit before Health; a note's page gets its buttons and a section under the
+    note, made for that vault and note."""
+    from fasthtml.common import Button, Section
+
+    async def go() -> list[httpx2.Response]:
+        server = hosted_dashboard(
+            world, tabs=lambda: (("Memory", "/memory"),),
+            note_actions=lambda vault, path: Button(f"Memory of {vault}/{path}", cls="mem"),
+            note_footer=lambda vault, path: Section("Learned from this note", id="learned"),
+        )
+        app = server.http_app(path="/mcp", stateless_http=True)
+        async with app.router.lifespan_context(app):
+            transport = httpx2.ASGITransport(app=Embed(app, world["spaces"]))
+            async with httpx2.AsyncClient(transport=transport, base_url=BASE_URL) as web:
+                alice = {"x-test-user": "alice"}
+                return [await web.get("/dash/overview", headers=alice),
+                        await web.get("/dash/wikis/note/notes?path=Alice.md", headers=alice)]
+
+    overview, note = run(go())
+    nav = overview.text[overview.text.index("<nav"):overview.text.index("</nav>")]
+    assert nav.index(">Wikis<") < nav.index('href="/dash/memory">Memory<') < nav.index(">Health<")
+    assert note.status_code == 200 and "Memory of notes/Alice.md" in note.text
+    assert note.text.index('class="note"') < note.text.index('id="learned"')
 
 
 def test_the_switcher_shows_the_viewers_own_vaults_in_the_apps_words(world) -> None:

@@ -215,7 +215,7 @@ def build_app(
             return page(title, active, external.user(), external.csrf(), *content, brand=brand,
                         extra_nav=external.nav, logout_action=external.logout_url, masthead=external.masthead,
                         menu=external.menu(), vaults=choices, vault_links=external.vault_links(),
-                        vault_words=external.vault_words)
+                        vault_words=external.vault_words, tabs=external.tabs())
         return page(title, active, current_user(session), session.get("csrf"), *content, vaults=choices)
 
     # -- which vaults the pages are about (the header's switcher) ----------------------
@@ -867,9 +867,11 @@ def build_app(
             meta.append(Span(f"{plural(reads, 'read')} by Claude in 30 days"))
         actions = A(NotStr(GITHUB_MARK), "GitHub", href=github, cls="btn-gh", target="_blank", rel="noopener",
                     title="Open on GitHub") if github else ""
+        extra = external.note_actions(vault, rel) if external is not None else None
+        footer = external.note_footer(vault, rel) if external is not None else None
         page = [
             Section(
-                Div(crumbs(vault, rel), Div(actions, cls="note-actions"), cls="note-top"),
+                Div(crumbs(vault, rel), Div(extra or "", actions, cls="note-actions"), cls="note-top"),
                 Div(H1(note.title, cls="note-title"), Div(*meta, cls="note-meta") if meta else "", cls="note-head"),
                 NotStr(note.properties) if note.properties else "",
                 P("This note is over 1 MB, so it's shown as plain text.", cls="muted small big-note")
@@ -880,6 +882,8 @@ def build_app(
                 cls="note-page",
             ),
         ]
+        if footer is not None:
+            page.append(footer)
         if linked:
             items = [Li(A(p.rsplit("/", 1)[-1][:-3], href=note_url(vault, p)),
                         Span(p.rsplit("/", 1)[0], cls="dir") if "/" in p else "") for p in linked]

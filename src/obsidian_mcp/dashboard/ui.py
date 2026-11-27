@@ -450,16 +450,18 @@ def page(
     logout_action: str | None = None, masthead: Any = None, menu: tuple[tuple[Any, ...], ...] = (),
     extra_css: str = "", at: str | None = None, vaults: Sequence[tuple[str, str]] = (),
     vault_links: Sequence[tuple[str, str]] = (), vault_words: tuple[str, str] = VAULT_WORDS,
+    tabs: Sequence[tuple[str, str]] = (),
 ) -> HTMLResponse:
     """A dashboard page: the brand, the vault switcher, the tabs, the theme switch and the
     account menu. `menu` adds the embedding app's pages (Settings, ...) to the account
     menu; `vaults`, `vault_links` and `vault_words` make the switcher (see
-    `vault_switcher`); `at` is where the dashboard is when the page isn't served by the
-    dashboard itself."""
+    `vault_switcher`); `tabs` are the embedding app's own (label, path), shown before Health;
+    `at` is where the dashboard is when the page isn't served by the dashboard itself."""
     token = _base.set(at) if at else None
     try:
         here = base()
-        links = [A(label, href=f"{here}{path}", cls="on" if label == active else None) for label, path in NAV]
+        tabs_ = [*NAV[:-1], *tabs, NAV[-1]]  # Health stays last
+        links = [A(label, href=f"{here}{path}", cls="on" if label == active else None) for label, path in tabs_]
         links += [A(label, href=href) for label, href in extra_nav]
         logout = Form(
             Input(type="hidden", name="csrf", value=csrf or ""),

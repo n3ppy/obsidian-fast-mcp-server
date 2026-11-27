@@ -22,6 +22,10 @@ def _no_items() -> tuple[tuple[str, str], ...]:
     return ()
 
 
+def _nothing(vault: str, path: str) -> Any:
+    return None
+
+
 @dataclass(frozen=True)
 class ExternalAuth:
     user: Callable[[], str | None]  # label of the person signed in, or None
@@ -37,3 +41,10 @@ class ExternalAuth:
     # base". With any, the switcher shows even for a single vault.
     vault_links: Callable[[], tuple[tuple[str, str], ...]] = _no_items
     vault_words: tuple[str, str] = ("vault", "vaults")  # the app's word for a vault, on every page
+    # The app's own tabs, before Health: (label, path inside the dashboard), e.g. ("Memory", "/memory").
+    # The app serves those pages itself, with ``ui.page(..., tabs=...)``.
+    tabs: Callable[[], tuple[tuple[str, str], ...]] = _no_items
+    # On a note's page: buttons beside its GitHub link, and a section under it. Each gets the
+    # vault's name and the note's path, and returns FT components or None.
+    note_actions: Callable[[str, str], Any] = _nothing
+    note_footer: Callable[[str, str], Any] = _nothing
